@@ -78,6 +78,7 @@ MEDIA_FIELDS = """
     format
     episodes
     status
+    nextAiringEpisode { airingAt episode }
     source
     genres
     duration
