@@ -505,7 +505,16 @@ class InfoHandler:
             xbmcplugin.setResolvedUrl(self.handle, True, xbmcgui.ListItem(path=path))
             return True
 
+        # Search-based backend (WNT2/Fanime): we can't resolve+play directly, only
+        # open its search results. Tell the user a search launched (the click
+        # otherwise feels dead). NOTE: whether the backend then finds/plays the
+        # title happens after this handoff and is outside our visibility — only
+        # Otaku resolves in-process and surfaces its own playback errors.
         xbmcplugin.setResolvedUrl(self.handle, False, xbmcgui.ListItem())
+        backend = {"watchnixtoons2": "WatchNixtoons2", "fanime_f": "Fanime"}.get(
+            get_playback_key(), "the configured source")
+        xbmcgui.Dialog().notification(
+            "8nime", "Searching {0}…".format(backend), xbmcgui.NOTIFICATION_INFO, 3000)
         xbmc.executebuiltin('ActivateWindow(Videos,{0},return)'.format(path))
         return True
 
