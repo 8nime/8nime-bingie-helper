@@ -81,13 +81,15 @@ def _watchnixtoons_search(title, search_type, episode=None):
     query = title
     if episode and search_type == "episodes":
         query = f"{title} Episode {episode}"
-    # WatchNixtoons2's actionSearchMenu -> actionCatalogSection -> getCatalogProperty
-    # requires params['path'] == 'search' (its special non-web catalog path) plus a
-    # query/searchType to run the search directly without prompting. Omitting path
-    # raises KeyError: 'path'.
+    # WatchNixtoons2 routes the search via actionSearchMenu -> actionCatalogSection
+    # -> getCatalogProperty, which needs params['path'] to equal its
+    # URL_PATHS['search'] == '/search' (WITH the leading slash) so CATALOG_FUNCS
+    # dispatches to makeSearchCatalog. A bare 'search' falls through to
+    # makeGenericCatalog, which does BASEURL + path -> 'wcostream.tvsearch' (bad
+    # host); omitting path entirely raises KeyError: 'path'.
     params = {
         "action": "actionSearchMenu",
-        "path": "search",
+        "path": "/search",
         "searchType": search_type,
         "query": query,
     }
