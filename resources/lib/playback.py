@@ -138,7 +138,11 @@ def play_episode_path(mal_id, episode, title=None, is_movie=False):
         if is_movie and mal_id:
             return f"plugin://{plugin}/play_movie/{mal_id}/"
         if mal_id and episode:
-            return f"plugin://{plugin}/play/{mal_id}/{episode}/"
+            # No trailing slash: Otaku's PLAY route does payload.rsplit("/")
+            # expecting exactly [mal_id, episode]. A trailing slash yields a 3rd
+            # empty element -> "too many values to unpack". (play_movie/ keeps its
+            # trailing slash because PLAY_MOVIE expects [mal_id, eps_watched].)
+            return f"plugin://{plugin}/play/{mal_id}/{episode}"
         if mal_id:
             return f"plugin://{plugin}/animes/{mal_id}/"
         return None
