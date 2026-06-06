@@ -361,13 +361,18 @@ class InfoHandler:
         for group in franchise:
             season = group.get("season") or 1
             cour_media = group.get("media") or media
-            # Prefer TMDB's per-season episode count (taxonomy source); fall back to
-            # summing the AniList cours (split-cour seasons add their parts).
-            season_total = self._tmdb_season_count(group)
+            # The tile total must match the episodes the list will actually show:
+            # sum the AniList per-cour counts (split-cour seasons add their parts).
+            # TMDB's per-season count is only a fallback — Fribb frequently records
+            # the SAME tmdb_season (e.g. 1) for every cour of a multi-season show,
+            # so _tmdb_season_count returns TMDB's lumped franchise total (~85 for
+            # Re:Zero) on EVERY season. The episode list builds from the AniList
+            # per-cour counts, so sourcing the tile from them keeps the two in sync.
+            season_total = sum(
+                self._episode_total(c.get("media") or {}) for c in group.get("cours") or []
+            )
             if not season_total:
-                season_total = sum(
-                    self._episode_total(c.get("media") or {}) for c in group.get("cours") or []
-                ) or self._episode_total(cour_media)
+                season_total = self._tmdb_season_count(group) or self._episode_total(cour_media)
             li = build_season_item(
                 group.get("mal_id") or cour_media.get("idMal"),
                 show_title,
@@ -515,8 +520,29 @@ class InfoHandler:
             ep_url = self._wnt2_episode_url(mal_id, media, title, episode)
             if ep_url:
                 resolved = wnt2.actionresolve_url(ep_url)
-                xbmcplugin.setResolvedUrl(
-                    self.handle, True, xbmcgui.ListItem(path=resolved))
+                # WNT2's actionResolve copies the player OSD metadata from the
+                # playing ListItem's infolabels (ListItem.Episode/Season/Title/
+                # TVShowTitle). A bare item left it stale ("S1:E24" on every
+                # episode), so stamp the real episode info on the item we hand
+                # back, which becomes the playing item.
+                try:
+                    ep_n = int(episode)
+                except (TypeError, ValueError):
+                    ep_n = 0
+                try:
+                    season_n = int(self.params.get("season") or 1)
+                except (TypeError, ValueError):
+                    season_n = 1
+                ep_label = "{0} - Episode {1}".format(title, ep_n) if ep_n else title
+                li = xbmcgui.ListItem(label=ep_label, path=resolved)
+                li.setInfo("video", {
+                    "mediatype": "episode",
+                    "tvshowtitle": title,
+                    "title": ep_label,
+                    "season": season_n,
+                    "episode": ep_n,
+                })
+                xbmcplugin.setResolvedUrl(self.handle, True, li)
                 return True
             # Couldn't pin the episode page (no title match / scrape miss) — fall
             # through to opening WNT2's search results so the click still acts.
