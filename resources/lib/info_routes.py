@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote_plus
 
 import xbmc
 import xbmcgui
@@ -35,11 +35,12 @@ from resources.lib.listitems import (
 from resources.lib.playback import (
     PLAYBACK_OTAKU,
     PLAYBACK_WATCHNIXTOONS2,
+    PLAYBACK_FANIME_F,
     get_playback_key,
     log_missing_plugin,
     resolve_play_path,
 )
-from resources.lib import season_map, tmdb, wnt2
+from resources.lib import season_map, tmdb, wnt2, fanimef
 
 
 class InfoHandler:
@@ -547,6 +548,18 @@ class InfoHandler:
             # Couldn't pin the episode page (no title match / scrape miss) — fall
             # through to opening WNT2's search results so the click still acts.
 
+        # FANime F: replicate its animixplay search + episode-list scrape and the
+        # echovideo getSources call to land the m3u8 ourselves — DIRECT play, no
+        # keyboard/picker, and it sidesteps fanimef's Play_All bug (which ignores
+        # the selected episode). We set the final stream item, so episode OSD info
+        # sticks (no second plugin hop).
+        if get_playback_key() == PLAYBACK_FANIME_F and episode and not is_movie:
+            li = self._fanimef_episode_item(mal_id, media, title, episode)
+            if li is not None:
+                xbmcplugin.setResolvedUrl(self.handle, True, li)
+                return True
+            # Miss — fall through to launching fanimef's own (keyboard) search.
+
         # Search-based backend (WNT2/Fanime): we can't resolve+play directly, only
         # open its search results. Tell the user a search launched (the click
         # otherwise feels dead). NOTE: whether the backend then finds/plays the
@@ -560,8 +573,9 @@ class InfoHandler:
         xbmc.executebuiltin('ActivateWindow(Videos,{0},return)'.format(path))
         return True
 
-    def _wnt2_search_titles(self, mal_id, media, title):
-        """Ordered wcostream search candidates: anime-planet slug, then AniList."""
+    def _search_titles(self, mal_id, media, title):
+        """Ordered search candidates for the scraper backends (WNT2/Fanime):
+        the Fribb anime-planet slug first (most reliable), then AniList."""
         titles = []
         anilist_id = media.get("id") if media else None
         slug = season_map.anime_planet_title(anilist_id=anilist_id, mal_id=mal_id)
@@ -589,7 +603,7 @@ class InfoHandler:
             ep = int(episode)
         except (TypeError, ValueError):
             return None
-        titles = self._wnt2_search_titles(mal_id, media, title)
+        titles = self._search_titles(mal_id, media, title)
         if not titles:
             return None
         try:
@@ -603,6 +617,63 @@ class InfoHandler:
             xbmc.LOGINFO,
         )
         return url
+
+    def _fanimef_episode_item(self, mal_id, media, title, episode):
+        """Resolve a FANime F episode to a playable HLS ListItem, or None."""
+        try:
+            ep_n = int(episode)
+        except (TypeError, ValueError):
+            return None
+        titles = self._search_titles(mal_id, media, title)
+        if not titles:
+            return None
+        try:
+            res, dbg = fanimef.resolve_episode(titles, ep_n, dub=False)
+        except Exception as exc:
+            xbmc.log("[8nime] Fanime resolve failed: %s" % exc, xbmc.LOGWARNING)
+            return None
+        xbmc.log(
+            "[8nime] Fanime resolve ep %d: %s (series=%r score=%.2f)"
+            % (ep_n, "hit" if res else "miss", dbg.get("series"), dbg.get("score", 0.0)),
+            xbmc.LOGINFO,
+        )
+        if not res or not res.get("stream"):
+            return None
+
+        stream = res["stream"]
+        # Mirror fanimef's play_item: HLS via inputstream.adaptive with the
+        # echovideo Referer/UA; non-m3u8 sources get the headers appended to the
+        # path. We set this directly (no second hop), so the OSD info below holds.
+        hdr = "User-Agent={0}&Referer={1}".format(
+            quote_plus(res.get("ua") or ""), quote_plus(res.get("referer") or "")
+        )
+        try:
+            season_n = int(self.params.get("season") or 1)
+        except (TypeError, ValueError):
+            season_n = 1
+        ep_label = "{0} - Episode {1}".format(title, ep_n) if ep_n else title
+
+        if ".m3u8" in stream:
+            li = xbmcgui.ListItem(label=ep_label, path=stream)
+            li.setMimeType("application/vnd.apple.mpegurl")
+            li.setContentLookup(False)
+            li.setProperty("inputstream", "inputstream.adaptive")
+            li.setProperty("inputstream.adaptive.manifest_type", "hls")
+            li.setProperty("inputstream.adaptive.stream_headers", hdr)
+            li.setProperty("inputstream.adaptive.manifest_headers", hdr)
+            li.setProperty("inputstream.adaptive.original_audio_language", "en")
+            li.setProperty("inputstream.adaptive.stream_selection_type", "adaptive")
+        else:
+            li = xbmcgui.ListItem(label=ep_label, path=stream + "|" + hdr)
+
+        li.setInfo("video", {
+            "mediatype": "episode",
+            "tvshowtitle": title,
+            "title": ep_label,
+            "season": season_n,
+            "episode": ep_n,
+        })
+        return li
 
     def stars_in_movies(self):
         return self._staff_media(character=True, movie_only=True)
