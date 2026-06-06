@@ -158,8 +158,14 @@ def play_episode_path(mal_id, episode, title=None, is_movie=False):
         return None
 
     if key == PLAYBACK_WATCHNIXTOONS2:
-        search_type = "movies" if is_movie else "episodes"
-        return _watchnixtoons_search(title, search_type, episode=episode)
+        if is_movie:
+            return _watchnixtoons_search(title, "movies")
+        # Episode search ('{title} Episode N') rarely matches WNT2's episode-page
+        # titles. A SERIES search reliably lands on the show (the path that works
+        # navigating WNT2 by hand); WNT2's own Cloudflare-capable resolver then
+        # plays the episode the user picks. We deliberately don't scrape wcostream
+        # in the helper (plain requests would hit Cloudflare 403s).
+        return _watchnixtoons_search(title, "series")
 
     if key == PLAYBACK_FANIME_F:
         return _fanime_search(title, episode=episode, is_movie=is_movie)
