@@ -87,6 +87,16 @@ def _fribb_cours(client, tvdb_id):
     if not tv_members:
         return None
 
+    # Choose the season axis that actually DISTINGUISHES the cours. TVDB season is
+    # the default (Fribb's most reliable split); only defer to tmdb_season when
+    # TVDB lumps every cour into one season but TMDB separates them. Fribb often
+    # records tmdb_season=1 for EVERY cour of a multi-season show (e.g. Re:Zero,
+    # which has correct TVDB seasons 1/2/2/3/4 but tmdb_season=1 throughout) — so
+    # preferring tmdb_season collapsed them all into one ~85-episode season.
+    tvdb_seasons = {m["season"] for m in tv_members}
+    tmdb_seasons = {m.get("tmdb_season") for m in tv_members if m.get("tmdb_season")}
+    group_by_tmdb = len(tvdb_seasons) <= 1 and len(tmdb_seasons) > 1
+
     cours = []
     complete = True
     for member in sorted(tv_members, key=lambda m: (m["season"], m["mal"] or 0)):
@@ -96,10 +106,12 @@ def _fribb_cours(client, tvdb_id):
             continue
         if not _aired(full):
             continue
-        # Group by the TMDB season number when Fribb carries it (so the detail
-        # page's seasons line up with TMDB's taxonomy + stills); fall back to the
-        # TVDB season otherwise.
-        group_season = member.get("tmdb_season") or member["season"]
+        # tmdb_id/tmdb_season are still passed through for fetching TMDB stills,
+        # but the GROUPING uses the distinguishing axis chosen above.
+        if group_by_tmdb:
+            group_season = member.get("tmdb_season") or member["season"]
+        else:
+            group_season = member["season"]
         cours.append(
             _cour_dict(full, group_season, member.get("tmdb_id"), member.get("tmdb_season"))
         )
