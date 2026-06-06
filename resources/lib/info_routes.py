@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from urllib.parse import urlencode
 
+import xbmc
 import xbmcgui
 import xbmcplugin
 
@@ -31,7 +32,12 @@ from resources.lib.listitems import (
     build_video_item,
     _title,
 )
-from resources.lib.playback import log_missing_plugin, resolve_play_path
+from resources.lib.playback import (
+    PLAYBACK_OTAKU,
+    get_playback_key,
+    log_missing_plugin,
+    resolve_play_path,
+)
 from resources.lib import season_map, tmdb
 
 
@@ -476,8 +482,17 @@ class InfoHandler:
             xbmcplugin.setResolvedUrl(self.handle, False, xbmcgui.ListItem())
             return False
 
-        li = xbmcgui.ListItem(path=path)
-        xbmcplugin.setResolvedUrl(self.handle, True, li)
+        # Otaku resolves to a playable endpoint (plugin://.../play[/_movie]) that
+        # Kodi can redirect-to-play via setResolvedUrl. Search-based backends
+        # (WatchNixtoons2 / Fanime) instead return a results DIRECTORY, which
+        # setResolvedUrl can't play ("nothing happens") — open it so the user
+        # picks a source.
+        if get_playback_key() == PLAYBACK_OTAKU:
+            xbmcplugin.setResolvedUrl(self.handle, True, xbmcgui.ListItem(path=path))
+            return True
+
+        xbmcplugin.setResolvedUrl(self.handle, False, xbmcgui.ListItem())
+        xbmc.executebuiltin('ActivateWindow(Videos,{0},return)'.format(path))
         return True
 
     def stars_in_movies(self):

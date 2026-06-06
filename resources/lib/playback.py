@@ -81,8 +81,13 @@ def _watchnixtoons_search(title, search_type, episode=None):
     query = title
     if episode and search_type == "episodes":
         query = f"{title} Episode {episode}"
+    # WatchNixtoons2's actionSearchMenu -> actionCatalogSection -> getCatalogProperty
+    # requires params['path'] == 'search' (its special non-web catalog path) plus a
+    # query/searchType to run the search directly without prompting. Omitting path
+    # raises KeyError: 'path'.
     params = {
         "action": "actionSearchMenu",
+        "path": "search",
         "searchType": search_type,
         "query": query,
     }
