@@ -420,11 +420,19 @@ class TestBuildEpisodeItem:
         li = build_episode_item(40748, 1, "Demon Slayer")
         assert li._properties["DBType"] == "episode"
 
-    def test_path_contains_otaku_play_url(self):
-        # With default stub settings (playback_plugin = "otaku")
+    def test_path_is_deferred_play_route(self):
+        # Episode items route through the helper's own info=play route; the
+        # actual backend URL (Otaku/WNT2/Fanime) is resolved later at click
+        # time by play(), so the click works per the configured plugin.
         li = build_episode_item(40748, 3, "Demon Slayer")
-        assert "plugin.video.otaku" in li._path
-        assert "40748" in li._path
+        assert "plugin.video.8nime.bingie.helper" in li._path
+        assert "info=play" in li._path
+        assert "mal_id=40748" in li._path
+        assert "episode=3" in li._path
+
+    def test_episode_item_is_playable(self):
+        li = build_episode_item(40748, 3, "Demon Slayer")
+        assert li._properties.get("IsPlayable") == "true"
 
     def test_total_episodes_property(self):
         li = build_episode_item(40748, 1, "Demon Slayer", total_eps=26)
