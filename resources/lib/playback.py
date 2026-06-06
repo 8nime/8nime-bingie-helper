@@ -35,10 +35,10 @@ def get_playback_key():
 
 
 def is_addon_installed(addon_id):
-    try:
-        return xbmcaddon.Addon(addon_id).getAddonInfo("version") != ""
-    except Exception:
-        return False
+    # Use HasAddon rather than xbmcaddon.Addon(): instantiating Addon() for an
+    # absent id makes Kodi log "Unknown addon id ..." at the C++ level even when
+    # the Python exception is caught, spamming the log on every check.
+    return bool(xbmc.getCondVisibility("System.HasAddon({0})".format(addon_id)))
 
 
 def flatten_seasons_enabled():
