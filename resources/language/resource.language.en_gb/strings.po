@@ -1,0 +1,102 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: plugin.video.anilist.bingie.helper\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: en_GB\n"
+
+msgctxt "#32001"
+msgid "Next Page"
+msgstr "Next Page"
+
+msgctxt "#32010"
+msgid "Account"
+msgstr "Account"
+
+msgctxt "#32050"
+msgid "Log in with AniList (Otaku)"
+msgstr "Log in with AniList (Otaku)"
+
+msgctxt "#32051"
+msgid "Opens Otaku account login. Bingie widgets reuse that AniList session automatically."
+msgstr "Opens Otaku account login. Bingie widgets reuse that AniList session automatically."
+
+msgctxt "#32020"
+msgid "Display"
+msgstr "Display"
+
+msgctxt "#32021"
+msgid "Title language"
+msgstr "Title language"
+
+msgctxt "#32022"
+msgid "Preferred language for anime titles in widgets"
+msgstr "Preferred language for anime titles in widgets"
+
+msgctxt "#32023"
+msgid "Romaji"
+msgstr "Romaji"
+
+msgctxt "#32024"
+msgid "English"
+msgstr "English"
+
+msgctxt "#32030"
+msgid "Playback"
+msgstr "Playback"
+
+msgctxt "#32031"
+msgid "Playback addon"
+msgstr "Playback addon"
+
+msgctxt "#32032"
+msgid "Addon used when you play or pick an episode. Widgets and More Info stay on AniList."
+msgstr "Addon used when you play or pick an episode. Widgets and More Info stay on AniList."
+
+msgctxt "#32033"
+msgid "Otaku"
+msgstr "Otaku"
+
+msgctxt "#32034"
+msgid "WatchNixtoons2"
+msgstr "WatchNixtoons2"
+
+msgctxt "#32035"
+msgid "Fanime F"
+msgstr "Fanime F"
+
+msgctxt "#32060"
+msgid "Advanced"
+msgstr "Advanced"
+
+msgctxt "#32061"
+msgid "Clear API cache"
+msgstr "Clear API cache"
+
+msgctxt "#32062"
+msgid "Deletes all cached AniList responses (1 hour TTL). Use if metadata looks stale or after API errors."
+msgstr "Deletes all cached AniList responses (1 hour TTL). Use if metadata looks stale or after API errors."
+
+msgctxt "#32063"
+msgid "Clear expired cache only"
+msgstr "Clear expired cache only"
+
+msgctxt "#32064"
+msgid "Removes only cache files older than 1 hour. Keeps fresh responses."
+msgstr "Removes only cache files older than 1 hour. Keeps fresh responses."
+
+msgctxt "#32065"
+msgid "Clear %d cached AniList responses (%s)? Next load will fetch fresh data."
+msgstr "Clear %d cached AniList responses (%s)? Next load will fetch fresh data."
+
+msgctxt "#32066"
+msgid "API cache is already empty"
+msgstr "API cache is already empty"
+
+msgctxt "#32067"
+msgid "Removed %d expired cache file(s)"
+msgstr "Removed %d expired cache file(s)"
+
+msgctxt "#32068"
+msgid "Cleared %d cache file(s)"
+msgstr "Cleared %d cache file(s)"
+

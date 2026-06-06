@@ -1,0 +1,38 @@
+{
+  "data": {
+    "Page": {
+      "pageInfo": {"hasNextPage": false},
+      "media": [
+        {
+          "id": 101922,
+          "idMal": 40748,
+          "type": "ANIME",
+          "title": {
+            "romaji": "Kimetsu no Yaiba: Mugen Ressha-hen",
+            "english": "Demon Slayer: Kimetsu no Yaiba - Mugen Train Arc",
+            "userPreferred": "Kimetsu no Yaiba: Mugen Ressha-hen"
+          },
+          "coverImage": {
+            "extraLarge": "https://s4.anilist.co/bx101922-cover.jpg",
+            "large": "https://s4.anilist.co/bx101922-cover-m.jpg",
+            "color": "#e4a15d"
+          },
+          "bannerImage": "https://s4.anilist.co/bx101922-banner.jpg",
+          "startDate": {"year": 2021, "month": 10, "day": 10},
+          "endDate": {"year": 2021, "month": 12, "day": 5},
+          "description": "Tanjiro and crew board the Mugen Train.",
+          "synonyms": ["Demon Slayer Mugen Train Arc"],
+          "format": "TV",
+          "episodes": 7,
+          "status": "FINISHED",
+          "source": "MANGA",
+          "genres": ["Action", "Adventure"],
+          "duration": 23,
+          "countryOfOrigin": "JP",
+          "averageScore": 83,
+          "trailer": {"id": "pFn3zPrh_4o", "site": "youtube"}
+        }
+      ]
+    }
+  }
+}

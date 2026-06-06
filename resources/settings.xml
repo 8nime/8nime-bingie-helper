@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<settings version="1">
+  <section id="plugin.video.8nime.bingie.helper">
+    <category id="account" label="32010" help="">
+      <group id="1" label="">
+        <setting id="anilist_login" type="action" label="32050" help="32051">
+          <level>0</level>
+          <data>RunPlugin(plugin://plugin.video.otaku/watchlist_login/anilist?auth_dialog=true)</data>
+          <control type="button" format="action">
+            <heading>32050</heading>
+          </control>
+        </setting>
+      </group>
+    </category>
+    <category id="display" label="32020" help="">
+      <group id="1" label="">
+        <setting id="title_language" type="string" label="32021" help="32022">
+          <level>0</level>
+          <default>english</default>
+          <constraints>
+            <options>
+              <option label="32023">romaji</option>
+              <option label="32024">english</option>
+            </options>
+          </constraints>
+          <control type="list" format="string">
+            <heading>32021</heading>
+          </control>
+        </setting>
+      </group>
+    </category>
+    <category id="playback" label="32030" help="">
+      <group id="1" label="">
+        <setting id="playback_plugin" type="string" label="32031" help="32032">
+          <level>0</level>
+          <default>otaku</default>
+          <constraints>
+            <options>
+              <option label="32033">otaku</option>
+              <option label="32034">watchnixtoons2</option>
+              <option label="32035">fanime_f</option>
+            </options>
+          </constraints>
+          <control type="list" format="string">
+            <heading>32031</heading>
+          </control>
+        </setting>
+      </group>
+    </category>
+    <category id="advanced" label="32060" help="">
+      <group id="1" label="">
+        <setting id="clear_cache" type="action" label="32061" help="32062">
+          <level>0</level>
+          <data>RunScript(plugin.video.8nime.bingie.helper,clear_cache=true)</data>
+          <control type="button" format="action">
+            <heading>32061</heading>
+          </control>
+        </setting>
+        <setting id="clear_expired_cache" type="action" label="32063" help="32064">
+          <level>0</level>
+          <data>RunScript(plugin.video.8nime.bingie.helper,clear_expired_cache=true)</data>
+          <control type="button" format="action">
+            <heading>32063</heading>
+          </control>
+        </setting>
+      </group>
+    </category>
+  </section>
+</settings>

@@ -1,0 +1,42 @@
+[
+  {
+    "tvdb_id": 76669,
+    "anilist_id": 16498,
+    "mal_id": 16498,
+    "type": "TV",
+    "season": {"tvdb": 1, "tmdb": 1},
+    "themoviedb_id": {"tv": 12345}
+  },
+  {
+    "tvdb_id": 76669,
+    "anilist_id": 20958,
+    "mal_id": 20958,
+    "type": "TV",
+    "season": {"tvdb": 2, "tmdb": 2},
+    "themoviedb_id": {"tv": 12345}
+  },
+  {
+    "tvdb_id": 359556,
+    "anilist_id": 101922,
+    "mal_id": 40748,
+    "type": "TV",
+    "season": {"tvdb": 1},
+    "themoviedb_id": null
+  },
+  {
+    "tvdb_id": 99999,
+    "anilist_id": 55555,
+    "mal_id": 55555,
+    "type": "MANGA",
+    "season": {"tvdb": 1},
+    "themoviedb_id": null
+  },
+  {
+    "tvdb_id": 88888,
+    "anilist_id": 44444,
+    "mal_id": null,
+    "type": "TV",
+    "season": {"tvdb": 1, "tmdb": 1},
+    "themoviedb_id": {"movie": 777}
+  }
+]
