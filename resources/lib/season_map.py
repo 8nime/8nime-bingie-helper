@@ -33,7 +33,8 @@ TV_TYPES = {"TV", "TV_SHORT"}
 CHECK_INTERVAL = 7 * 24 * 3600
 # Compact-cache schema version. Bump when the record layout changes so an old
 # cache is rebuilt on next refresh even if the upstream SHA is unchanged.
-FORMAT = 2
+# 3: appended anime-planet slug to by_anilist/by_mal records (WNT2 search title).
+FORMAT = 3
 
 _LOCK = threading.Lock()
 _LOADED = False
@@ -79,13 +80,26 @@ def _tmdb_of(entry):
     return tmdb_id, tmdb_season
 
 
+def _anime_planet_of(entry):
+    """Return Fribb's anime-planet slug for an entry, or None.
+
+    Anime-Planet ids are clean hyphenated slugs (e.g.
+    're-zero-starting-life-in-another-world'); de-hyphenated they make the most
+    reliable wcostream search query -- far better than AniList romaji/english,
+    which carry punctuation and season suffixes. wcostream has no cross-DB id of
+    its own, so this slug is the closest thing to a canonical search key.
+    """
+    slug = entry.get("anime-planet_id")
+    return slug if isinstance(slug, str) and slug else None
+
+
 def build_compact(data):
     """Distil Fribb's anime-list-full into the compact lookup structure.
 
-    Record layout (FORMAT 2):
-      by_anilist/by_mal[id] = [tvdb_id, tvdb_season, tmdb_id, tmdb_season]
+    Record layout (FORMAT 3):
+      by_anilist/by_mal[id] = [tvdb_id, tvdb_season, tmdb_id, tmdb_season, ap_slug]
       tvdb_members[tvdb_id] = [[anilist, mal, tvdb_season, is_tv, tmdb_id, tmdb_season], ...]
-    tmdb_id / tmdb_season may be null when Fribb has no TMDB mapping.
+    tmdb_id / tmdb_season / ap_slug may be null when Fribb has no such mapping.
     """
     by_anilist = {}
     by_mal = {}
@@ -100,11 +114,12 @@ def build_compact(data):
         anilist_id = entry.get("anilist_id")
         mal_id = entry.get("mal_id")
         tmdb_id, tmdb_season = _tmdb_of(entry)
+        ap_slug = _anime_planet_of(entry)
         is_tv = 1 if (entry.get("type") or "").upper() in TV_TYPES else 0
         if isinstance(anilist_id, int):
-            by_anilist[str(anilist_id)] = [tvdb_id, season, tmdb_id, tmdb_season]
+            by_anilist[str(anilist_id)] = [tvdb_id, season, tmdb_id, tmdb_season, ap_slug]
         if isinstance(mal_id, int):
-            by_mal[str(mal_id)] = [tvdb_id, season, tmdb_id, tmdb_season]
+            by_mal[str(mal_id)] = [tvdb_id, season, tmdb_id, tmdb_season, ap_slug]
         tvdb_members.setdefault(str(tvdb_id), []).append(
             [
                 anilist_id if isinstance(anilist_id, int) else None,
@@ -291,6 +306,21 @@ def tmdb_lookup(anilist_id=None, mal_id=None):
             if hit and len(hit) >= 4:
                 return hit[2], hit[3]
     return None, None
+
+
+def anime_planet_title(anilist_id=None, mal_id=None):
+    """Return a de-hyphenated anime-planet slug as a wcostream search title.
+
+    e.g. 're-zero-starting-life-in-another-world' -> 're zero starting life in
+    another world'. Returns None when Fribb has no anime-planet id for the show.
+    """
+    _load()
+    for value, table in ((anilist_id, _BY_ANILIST), (mal_id, _BY_MAL)):
+        if value is not None and _intable(value):
+            hit = table.get(str(int(value)))
+            if hit and len(hit) >= 5 and hit[4]:
+                return hit[4].replace("-", " ").strip()
+    return None
 
 
 def members(tvdb_id):

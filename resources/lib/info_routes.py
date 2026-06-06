@@ -34,11 +34,12 @@ from resources.lib.listitems import (
 )
 from resources.lib.playback import (
     PLAYBACK_OTAKU,
+    PLAYBACK_WATCHNIXTOONS2,
     get_playback_key,
     log_missing_plugin,
     resolve_play_path,
 )
-from resources.lib import season_map, tmdb
+from resources.lib import season_map, tmdb, wnt2
 
 
 class InfoHandler:
@@ -505,6 +506,21 @@ class InfoHandler:
             xbmcplugin.setResolvedUrl(self.handle, True, xbmcgui.ListItem(path=path))
             return True
 
+        # WatchNixtoons2: pin the exact wcostream episode page ourselves
+        # (replicating WNT2's own search + episode-list scrape) and hand it to
+        # WNT2's actionResolve. This is DIRECT play — no picker / middle screen.
+        # wcostream carries no cross-DB id, so we match by title: the Fribb
+        # anime-planet slug first (most reliable), then AniList romaji/english.
+        if get_playback_key() == PLAYBACK_WATCHNIXTOONS2 and episode and not is_movie:
+            ep_url = self._wnt2_episode_url(mal_id, media, title, episode)
+            if ep_url:
+                resolved = wnt2.actionresolve_url(ep_url)
+                xbmcplugin.setResolvedUrl(
+                    self.handle, True, xbmcgui.ListItem(path=resolved))
+                return True
+            # Couldn't pin the episode page (no title match / scrape miss) — fall
+            # through to opening WNT2's search results so the click still acts.
+
         # Search-based backend (WNT2/Fanime): we can't resolve+play directly, only
         # open its search results. Tell the user a search launched (the click
         # otherwise feels dead). NOTE: whether the backend then finds/plays the
@@ -517,6 +533,50 @@ class InfoHandler:
             "8nime", "Searching {0}…".format(backend), xbmcgui.NOTIFICATION_INFO, 3000)
         xbmc.executebuiltin('ActivateWindow(Videos,{0},return)'.format(path))
         return True
+
+    def _wnt2_search_titles(self, mal_id, media, title):
+        """Ordered wcostream search candidates: anime-planet slug, then AniList."""
+        titles = []
+        anilist_id = media.get("id") if media else None
+        slug = season_map.anime_planet_title(anilist_id=anilist_id, mal_id=mal_id)
+        if slug:
+            titles.append(slug)
+        if media:
+            names = media.get("title") or {}
+            for key in ("romaji", "english"):
+                value = names.get(key)
+                if value:
+                    titles.append(value)
+        if title:
+            titles.append(title)
+        seen, out = set(), []
+        for candidate in titles:
+            key = (candidate or "").lower().strip()
+            if key and key not in seen:
+                seen.add(key)
+                out.append(candidate)
+        return out
+
+    def _wnt2_episode_url(self, mal_id, media, title, episode):
+        """Resolve the wcostream episode-page URL for an episode, or None."""
+        try:
+            ep = int(episode)
+        except (TypeError, ValueError):
+            return None
+        titles = self._wnt2_search_titles(mal_id, media, title)
+        if not titles:
+            return None
+        try:
+            url, dbg = wnt2.resolve_episode_url(titles, ep, wnt2.default_base_url())
+        except Exception as exc:
+            xbmc.log("[8nime] WNT2 resolve failed: %s" % exc, xbmc.LOGWARNING)
+            return None
+        xbmc.log(
+            "[8nime] WNT2 resolve ep %d: %s (series=%r score=%.2f)"
+            % (ep, "hit" if url else "miss", dbg.get("series"), dbg.get("score", 0.0)),
+            xbmc.LOGINFO,
+        )
+        return url
 
     def stars_in_movies(self):
         return self._staff_media(character=True, movie_only=True)
