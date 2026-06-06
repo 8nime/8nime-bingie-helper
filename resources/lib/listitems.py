@@ -9,6 +9,7 @@ import xbmcgui
 from resources.lib.constants import PLUGIN_URL
 from resources.lib.playback import (
     browse_show_path,
+    helper_play_url,
     play_episode_path,
     play_movie_path,
 )
@@ -505,7 +506,13 @@ def build_episode_item(
     # per-cour season-specific title used by search-based backends (WNT2/fanime),
     # where "{title} Episode {N}" must disambiguate the season. Otaku ignores it
     # (resolves by mal_id+local episode), so falling back to show_title is safe.
-    play = play_episode_path(mal_id, episode, title=play_title or show_title)
+    # Route through the deferred info=play route (resolved at click time by the
+    # play() handler) rather than baking the backend URL into the item. Otaku
+    # resolves to a playable; search backends (WNT2/Fanime) return a directory
+    # that can't be set as a playable path — play() opens those via ActivateWindow.
+    # Setting the search URL directly here made clicking an episode try to "play a
+    # folder" and silently fail.
+    play = helper_play_url(mal_id, episode, title=play_title or show_title)
     info = {
         "title": ep_name or label,
         "tvshowtitle": show_title,
@@ -537,6 +544,7 @@ def build_episode_item(
     li.setProperty("tmdb_type", "tv")
     if total_eps:
         li.setProperty("TotalEpisodes", str(total_eps))
+    li.setProperty("IsPlayable", "true")
     li.setProperty("folderpath", play)
     li.setProperty("filenameandpath", play)
     li.setPath(play)
