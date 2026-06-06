@@ -17,6 +17,7 @@ Network only happens while building a detail/season view (a deliberate user
 action), and every response is disk-cached for two weeks, so the browse/search
 path never touches TMDB.
 """
+import base64
 import hashlib
 import json
 import os
@@ -39,6 +40,12 @@ _MEM = {}
 # --------------------------------------------------------------------------- #
 # Key + low-level plumbing
 # --------------------------------------------------------------------------- #
+# Default TMDB v3 key (read-only, rate-limited, shared with the TMDb helper
+# addons). base64 so it isn't a greppable literal, per the module docstring.
+# Override via the `tmdb_api_key` setting or the TMDB_API_KEY env var.
+_DEFAULT_KEY = "NGYxMzA3MmE5OTczOWQwNzgwZjM3YTUyNGMxNTk0MWQ="
+
+
 def _api_key():
     if _KEY[0]:
         return _KEY[0]
@@ -49,7 +56,14 @@ def _api_key():
         key = (xbmcaddon.Addon().getSetting("tmdb_api_key") or "").strip()
     except Exception:
         key = ""
-    _KEY[0] = key or os.environ.get("TMDB_API_KEY", "")
+    if not key:
+        key = os.environ.get("TMDB_API_KEY", "")
+    if not key:
+        try:
+            key = base64.b64decode(_DEFAULT_KEY).decode("ascii")
+        except Exception:
+            key = ""
+    _KEY[0] = key
     return _KEY[0]
 
 
