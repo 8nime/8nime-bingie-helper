@@ -18,7 +18,9 @@ PLAYBACK_FANIME_F = "fanime_f"
 PLUGIN_IDS = {
     PLAYBACK_OTAKU: "plugin.video.otaku",
     PLAYBACK_WATCHNIXTOONS2: "plugin.video.watchnixtoons2",
-    PLAYBACK_FANIME_F: "plugin.video.fanime_f",
+    # Real addon id is plugin.video.fanimef (FANime F, OldManJax/animaniac repo) —
+    # NOT plugin.video.fanime_f, which never existed and dead-ended every click.
+    PLAYBACK_FANIME_F: "plugin.video.fanimef",
 }
 
 
@@ -97,21 +99,15 @@ def _watchnixtoons_search(title, search_type, episode=None):
 
 
 def _fanime_search(title, episode=None, is_movie=False):
+    # FANime F (plugin.video.fanimef) takes NO query parameter: its router does
+    # int(params['mode']) (so the old mode=search crashed it) and its search
+    # (mode=8) always opens a Kodi keyboard for the user to type — there is no way
+    # to pre-fill or defer the term. mode=8 also needs a non-empty `url`, or the
+    # router falls through to the main menu. So all we can do is launch its
+    # search; the title/episode can't be passed through. Best treated as a
+    # bundled standalone addon rather than a click-to-play backend.
     plugin = PLUGIN_IDS[PLAYBACK_FANIME_F]
-    query = title
-    if episode and not is_movie:
-        query = f"{title} Episode {episode}"
-    params = {
-        "mode": "search",
-        "query": query,
-    }
-    if is_movie:
-        params["section"] = "movies"
-    elif episode:
-        params["section"] = "episodes"
-    else:
-        params["section"] = "tvshows"
-    return f"plugin://{plugin}/?{urlencode(params)}"
+    return f"plugin://{plugin}/?mode=8&url=search"
 
 
 def play_movie_path(media, title=None):
