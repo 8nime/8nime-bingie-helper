@@ -208,8 +208,17 @@ class InfoHandler:
         total = self._episode_total(media)
         cour_title = _title(media)
         title = show_title or cour_title
-        cap = max(self._limit(), total)
         if total < 1:
+            return []
+
+        # Only list episodes that have actually AIRED. AniList's
+        # nextAiringEpisode.episode is the first NOT-yet-aired episode, so a
+        # RELEASING cour has aired = next_ep - 1; FINISHED cours carry no
+        # nextAiringEpisode and list the full total. Without this the planned
+        # (unaired) episodes were shown.
+        next_ep = int((media.get("nextAiringEpisode") or {}).get("episode") or 0)
+        last = min(total, (next_ep - 1) if next_ep else total)
+        if last < 1:
             return []
 
         # Primary source for stills + episode names/plots is TMDB (real per-episode
@@ -239,7 +248,7 @@ class InfoHandler:
                 thumbs = {}
 
         items = []
-        for ep in range(1, min(total, cap) + 1):
+        for ep in range(1, last + 1):
             meta = tmdb_eps.get(season_offset + ep) or {}
             thumb = meta.get("still") or thumb_for_episode(thumbs, ep, offset)
             items.append(
@@ -479,7 +488,12 @@ class InfoHandler:
             is_movie=is_movie,
         )
         if not path:
+            # Don't fail silently — tell the user why nothing played (no configured
+            # source / unmapped title / missing plugin), instead of a dead click.
             xbmcplugin.setResolvedUrl(self.handle, False, xbmcgui.ListItem())
+            xbmcgui.Dialog().notification(
+                "8nime", "No playback source available for this title.",
+                xbmcgui.NOTIFICATION_WARNING, 4000)
             return False
 
         # Otaku resolves to a playable endpoint (plugin://.../play[/_movie]) that
