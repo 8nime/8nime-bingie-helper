@@ -351,12 +351,27 @@ def build_item(media, detailed=False):
     except Exception:
         pass
 
-    if not is_movie:
-        browse = browse_show_path(mal_id)
-        if browse:
-            li.setProperty("folderpath", browse)
-            li.setProperty("filenameandpath", browse)
-            li.setProperty("IsPlayable", "false")
+    # The skin's Play button does PlayMedia($INFO[ListItem.FolderPath]) /
+    # PlayMedia($INFO[ListItem.FilenameAndPath]) (FolderPath+isdir = navigate,
+    # FilenameAndPath = play). Wire those so Play actually resolves through the
+    # helper's info=play route (which the configured provider then plays).
+    if is_movie:
+        play = helper_play_url(mal_id, is_movie=True, title=label)
+        li.setProperty("IsPlayable", "true")
+        li.setProperty("folderpath", play)
+        li.setProperty("filenameandpath", play)
+        apply_bingie_properties(li, media, detailed=detailed)
+        li.setPath(play)
+        return li
+
+    # TV: clicking navigates into the seasons browse (FolderPath), while the Play
+    # button plays the latest aired episode (FilenameAndPath, no episode -> play()
+    # resolves the latest). This is what the spotlight "Play" expects.
+    browse = browse_show_path(mal_id)
+    if browse:
+        li.setProperty("folderpath", browse)
+        li.setProperty("IsPlayable", "false")
+    li.setProperty("filenameandpath", helper_play_url(mal_id, title=label))
 
     apply_bingie_properties(li, media, detailed=detailed)
 
@@ -368,11 +383,9 @@ def build_detail_item(media):
     li = build_item(media, detailed=True)
     if not li:
         return None
-    if _is_movie(media):
-        play = play_movie_path(media)
-        if play:
-            li.setProperty("folderpath", play)
-            li.setProperty("filenameandpath", play)
+    # build_item already wires movie play via the info=play route (resolved by the
+    # configured provider). Don't overwrite it with play_movie_path's search dir,
+    # which can't be played by PlayMedia.
     return li
 
 

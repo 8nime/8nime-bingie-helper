@@ -487,6 +487,15 @@ class InfoHandler:
         tmdb_type = (self.params.get("tmdb_type") or "").lower()
         is_movie = tmdb_type == "movie" or (media and (media.get("format") or "").upper() in ("MOVIE", "ONE_SHOT"))
 
+        # "Play latest": a show item's Play button routes here with no episode (the
+        # spotlight/hero "Play" expectation). Resolve the latest AIRED episode so
+        # the provider plays something instead of dead-ending on a browse/search.
+        if not is_movie and not episode and media:
+            total = int(media.get("episodes") or 0)
+            next_ep = int((media.get("nextAiringEpisode") or {}).get("episode") or 0)
+            latest = (next_ep - 1) if next_ep else total
+            episode = str(latest if latest >= 1 else 1)
+
         path = resolve_play_path(
             media=media,
             mal_id=mal_id,
