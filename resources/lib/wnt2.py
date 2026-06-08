@@ -51,6 +51,12 @@ _EPISODE_START, _EPISODE_END = 'name="pid"', "<!--CAT PAGE"
 
 _EP_NUM_RE = re.compile(r"episode\s+0*(\d+)", re.IGNORECASE)
 
+# wcostream keeps movies on a separate /movie-list page (NOT in series search).
+# makeMoviesSearchCatalog slices from '"ddmcc"' and substring-filters by query.
+MOVIE_LIST_PATH = "/movie-list"
+_MOVIE_RE = re.compile(r'<a href="([^"]+).*?>([^<]+)')
+_LANG_NOISE = re.compile(r"\b(english|dubbed|subbed|dub|sub|movie|ova)\b", re.IGNORECASE)
+
 
 class _TLSAdapter(HTTPAdapter):
     def __init__(self, ssl_version, *a, **k):
@@ -132,12 +138,22 @@ def episode_list(series_url, base_url, session=None):
     ]
 
 
+def _pair_score(n, t):
+    """Score two normalized titles. Exact == 1.0; containment scored above fuzzy
+    ratio so 'Naruto' doesn't lose to 'Naruto Shippuden' for canonical 'Naruto'."""
+    if not n or not t:
+        return 0.0
+    if n == t:
+        return 1.0
+    if t in n or n in t:
+        return 0.9 + 0.1 * (min(len(t), len(n)) / max(len(t), len(n)))
+    return difflib.SequenceMatcher(None, n, t).ratio()
+
+
 def best_series(candidates, *titles):
     """Pick the candidate whose name best matches any supplied title.
 
-    Returns (link, name, score) or (None, None, 0.0). Exact normalized equality
-    and full containment are scored above fuzzy ratio so 'Naruto' doesn't lose
-    to 'Naruto Shippuden' when the canonical title is plain 'Naruto'.
+    Returns (link, name, score) or (None, None, 0.0).
     """
     norm_titles = [_norm(t) for t in titles if t]
     if not norm_titles:
@@ -145,15 +161,7 @@ def best_series(candidates, *titles):
     best, best_name, best_score = None, None, 0.0
     for link, name in candidates:
         n = _norm(name)
-        score = 0.0
-        for t in norm_titles:
-            if n == t:
-                s = 1.0
-            elif t and (t in n or n in t):
-                s = 0.9 + 0.1 * (min(len(t), len(n)) / max(len(t), len(n)))
-            else:
-                s = difflib.SequenceMatcher(None, n, t).ratio()
-            score = max(score, s)
+        score = max((_pair_score(n, t) for t in norm_titles), default=0.0)
         if score > best_score:
             best, best_name, best_score = link, name, score
     return best, best_name, best_score
@@ -174,6 +182,48 @@ def match_episode(episodes, number, lang="sub"):
             if not t or t == lang:
                 return (l, n, t)
     return hits[0]
+
+
+def movie_list(base_url, session=None):
+    """Return [(url, name), ...] from wcostream's /movie-list page."""
+    session = session or requests.session()
+    html = _request(session, base_url + MOVIE_LIST_PATH).text
+    i = html.find('"ddmcc"')
+    if i == -1:
+        return []
+    seg = html[i : html.find("/ul></ul", i)]
+    return _MOVIE_RE.findall(seg)
+
+
+def resolve_movie_url(titles, base_url, lang="sub", min_score=0.6):
+    """Find a wcostream movie-page URL by title (movies live on /movie-list, not
+    series search). Returns (movie_url, debug). The page URL plays directly via
+    WNT2 actionResolve, just like an episode page."""
+    session = requests.session()
+    movies = movie_list(base_url, session)
+    debug = {"candidates": len(movies), "movie": None, "score": 0.0}
+    if not movies:
+        return None, debug
+    norm_titles = [_norm(t) for t in titles if t]
+    if not norm_titles:
+        return None, debug
+    scored = []
+    for url, name in movies:
+        # Strip the "English Dubbed/Subbed"/"Movie" noise before matching.
+        clean = _norm(_LANG_NOISE.sub(" ", name))
+        score = max((_pair_score(clean, t) for t in norm_titles), default=0.0)
+        scored.append((score, url, name))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top_score = scored[0][0]
+    debug.update({"movie": scored[0][2], "score": top_score})
+    if top_score < min_score:
+        return None, debug
+    # Among the near-best matches, prefer the requested sub/dub variant.
+    near = [s for s in scored if top_score - s[0] < 0.02]
+    pref = [s for s in near if ("subbed" in s[2].lower()) == (lang == "sub")]
+    chosen = (pref or near)[0]
+    debug.update({"movie": chosen[2], "movie_url": chosen[1], "score": chosen[0]})
+    return chosen[1], debug
 
 
 def resolve_episode_url(titles, number, base_url, lang="sub", min_score=0.55):

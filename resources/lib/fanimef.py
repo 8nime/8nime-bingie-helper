@@ -119,6 +119,12 @@ def resolve_stream(embed_url, session=None):
     return src, js.get("tracks")
 
 
+def resolve_movie(titles, dub=False, min_score=0.55):
+    """Resolve a movie. On animixplay a movie is a 1-episode series (key '0'),
+    so this is episode 1. Returns (result, debug) like resolve_episode."""
+    return resolve_episode(titles, 1, dub=dub, min_score=min_score)
+
+
 def resolve_episode(titles, number, dub=False, min_score=0.55):
     """Resolve episode ``number`` to a stream.
 

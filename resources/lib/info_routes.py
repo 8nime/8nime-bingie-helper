@@ -512,49 +512,28 @@ class InfoHandler:
             xbmcplugin.setResolvedUrl(self.handle, True, xbmcgui.ListItem(path=path))
             return True
 
-        # WatchNixtoons2: pin the exact wcostream episode page ourselves
-        # (replicating WNT2's own search + episode-list scrape) and hand it to
-        # WNT2's actionResolve. This is DIRECT play — no picker / middle screen.
-        # wcostream carries no cross-DB id, so we match by title: the Fribb
-        # anime-planet slug first (most reliable), then AniList romaji/english.
-        if get_playback_key() == PLAYBACK_WATCHNIXTOONS2 and episode and not is_movie:
-            ep_url = self._wnt2_episode_url(mal_id, media, title, episode)
-            if ep_url:
-                resolved = wnt2.actionresolve_url(ep_url)
-                # WNT2's actionResolve copies the player OSD metadata from the
-                # playing ListItem's infolabels (ListItem.Episode/Season/Title/
-                # TVShowTitle). A bare item left it stale ("S1:E24" on every
-                # episode), so stamp the real episode info on the item we hand
-                # back, which becomes the playing item.
-                try:
-                    ep_n = int(episode)
-                except (TypeError, ValueError):
-                    ep_n = 0
-                try:
-                    season_n = int(self.params.get("season") or 1)
-                except (TypeError, ValueError):
-                    season_n = 1
-                ep_label = "{0} - Episode {1}".format(title, ep_n) if ep_n else title
-                li = xbmcgui.ListItem(label=ep_label, path=resolved)
-                li.setInfo("video", {
-                    "mediatype": "episode",
-                    "tvshowtitle": title,
-                    "title": ep_label,
-                    "season": season_n,
-                    "episode": ep_n,
-                })
+        # WatchNixtoons2: pin the exact wcostream page ourselves (replicating
+        # WNT2's own search/episode-list scrape — and /movie-list for movies) and
+        # hand it to WNT2's actionResolve. DIRECT play, no picker. wcostream has
+        # no cross-DB id, so we match by title: the Fribb anime-planet slug first
+        # (most reliable), then AniList romaji/english. The SELECTED provider must
+        # play every media type, so movies + specials route here too, not just
+        # episodes (specials carry an episode number and use the episode path).
+        if get_playback_key() == PLAYBACK_WATCHNIXTOONS2 and (episode or is_movie):
+            li = self._wnt2_play_item(mal_id, media, title, episode, is_movie)
+            if li is not None:
                 xbmcplugin.setResolvedUrl(self.handle, True, li)
                 return True
-            # Couldn't pin the episode page (no title match / scrape miss) — fall
-            # through to opening WNT2's search results so the click still acts.
+            # Miss (no title match / scrape miss) — fall through to WNT2 search.
 
         # FANime F: replicate its animixplay search + episode-list scrape and the
         # echovideo getSources call to land the m3u8 ourselves — DIRECT play, no
         # keyboard/picker, and it sidesteps fanimef's Play_All bug (which ignores
-        # the selected episode). We set the final stream item, so episode OSD info
-        # sticks (no second plugin hop).
-        if get_playback_key() == PLAYBACK_FANIME_F and episode and not is_movie:
-            li = self._fanimef_episode_item(mal_id, media, title, episode)
+        # the selected episode). We set the final stream item, so OSD info sticks
+        # (no second plugin hop). Handles movies too (a movie is a 1-episode
+        # series on animixplay).
+        if get_playback_key() == PLAYBACK_FANIME_F and (episode or is_movie):
+            li = self._fanimef_play_item(mal_id, media, title, episode, is_movie)
             if li is not None:
                 xbmcplugin.setResolvedUrl(self.handle, True, li)
                 return True
@@ -618,23 +597,83 @@ class InfoHandler:
         )
         return url
 
-    def _fanimef_episode_item(self, mal_id, media, title, episode):
-        """Resolve a FANime F episode to a playable HLS ListItem, or None."""
+    def _wnt2_play_item(self, mal_id, media, title, episode, is_movie):
+        """Build a playable WNT2 ListItem (episode/special or movie), or None.
+
+        Both resolve to a wcostream page played via WNT2's actionResolve; only
+        the lookup (episode-list vs /movie-list) and the OSD metadata differ.
+        """
+        if is_movie:
+            titles = self._search_titles(mal_id, media, title)
+            if not titles:
+                return None
+            try:
+                url, dbg = wnt2.resolve_movie_url(titles, wnt2.default_base_url())
+            except Exception as exc:
+                xbmc.log("[8nime] WNT2 movie resolve failed: %s" % exc, xbmc.LOGWARNING)
+                return None
+            xbmc.log(
+                "[8nime] WNT2 movie: %s (%r score=%.2f)"
+                % ("hit" if url else "miss", dbg.get("movie"), dbg.get("score", 0.0)),
+                xbmc.LOGINFO,
+            )
+            if not url:
+                return None
+            li = xbmcgui.ListItem(label=title, path=wnt2.actionresolve_url(url))
+            li.setInfo("video", {"mediatype": "movie", "title": title})
+            return li
+
+        ep_url = self._wnt2_episode_url(mal_id, media, title, episode)
+        if not ep_url:
+            return None
         try:
             ep_n = int(episode)
         except (TypeError, ValueError):
-            return None
+            ep_n = 0
+        try:
+            season_n = int(self.params.get("season") or 1)
+        except (TypeError, ValueError):
+            season_n = 1
+        # WNT2's actionResolve copies OSD metadata from the playing ListItem's
+        # infolabels, so stamp the real info (a bare item showed a stale "S1:E24").
+        ep_label = "{0} - Episode {1}".format(title, ep_n) if ep_n else title
+        li = xbmcgui.ListItem(label=ep_label, path=wnt2.actionresolve_url(ep_url))
+        li.setInfo("video", {
+            "mediatype": "episode",
+            "tvshowtitle": title,
+            "title": ep_label,
+            "season": season_n,
+            "episode": ep_n,
+        })
+        return li
+
+    def _fanimef_play_item(self, mal_id, media, title, episode, is_movie):
+        """Resolve a FANime F episode/special or movie to a playable HLS item, or None."""
         titles = self._search_titles(mal_id, media, title)
         if not titles:
             return None
-        try:
-            res, dbg = fanimef.resolve_episode(titles, ep_n, dub=False)
-        except Exception as exc:
-            xbmc.log("[8nime] Fanime resolve failed: %s" % exc, xbmc.LOGWARNING)
-            return None
+        if is_movie:
+            ep_n = 0
+            try:
+                res, dbg = fanimef.resolve_movie(titles, dub=False)
+            except Exception as exc:
+                xbmc.log("[8nime] Fanime movie resolve failed: %s" % exc, xbmc.LOGWARNING)
+                return None
+            kind = "movie"
+        else:
+            try:
+                ep_n = int(episode)
+            except (TypeError, ValueError):
+                return None
+            try:
+                res, dbg = fanimef.resolve_episode(titles, ep_n, dub=False)
+            except Exception as exc:
+                xbmc.log("[8nime] Fanime resolve failed: %s" % exc, xbmc.LOGWARNING)
+                return None
+            kind = "ep %d" % ep_n
         xbmc.log(
-            "[8nime] Fanime resolve ep %d: %s (series=%r score=%.2f)"
-            % (ep_n, "hit" if res else "miss", dbg.get("series"), dbg.get("score", 0.0)),
+            "[8nime] Fanime resolve %s: %s (series=%r score=%.2f)"
+            % (kind, "hit" if res else "miss", dbg.get("series"), dbg.get("score", 0.0)),
             xbmc.LOGINFO,
         )
         if not res or not res.get("stream"):
@@ -647,14 +686,25 @@ class InfoHandler:
         hdr = "User-Agent={0}&Referer={1}".format(
             quote_plus(res.get("ua") or ""), quote_plus(res.get("referer") or "")
         )
-        try:
-            season_n = int(self.params.get("season") or 1)
-        except (TypeError, ValueError):
-            season_n = 1
-        ep_label = "{0} - Episode {1}".format(title, ep_n) if ep_n else title
+        if is_movie:
+            label = title
+            info = {"mediatype": "movie", "title": title}
+        else:
+            try:
+                season_n = int(self.params.get("season") or 1)
+            except (TypeError, ValueError):
+                season_n = 1
+            label = "{0} - Episode {1}".format(title, ep_n) if ep_n else title
+            info = {
+                "mediatype": "episode",
+                "tvshowtitle": title,
+                "title": label,
+                "season": season_n,
+                "episode": ep_n,
+            }
 
         if ".m3u8" in stream:
-            li = xbmcgui.ListItem(label=ep_label, path=stream)
+            li = xbmcgui.ListItem(label=label, path=stream)
             li.setMimeType("application/vnd.apple.mpegurl")
             li.setContentLookup(False)
             li.setProperty("inputstream", "inputstream.adaptive")
@@ -664,15 +714,9 @@ class InfoHandler:
             li.setProperty("inputstream.adaptive.original_audio_language", "en")
             li.setProperty("inputstream.adaptive.stream_selection_type", "adaptive")
         else:
-            li = xbmcgui.ListItem(label=ep_label, path=stream + "|" + hdr)
+            li = xbmcgui.ListItem(label=label, path=stream + "|" + hdr)
 
-        li.setInfo("video", {
-            "mediatype": "episode",
-            "tvshowtitle": title,
-            "title": ep_label,
-            "season": season_n,
-            "episode": ep_n,
-        })
+        li.setInfo("video", info)
         return li
 
     def stars_in_movies(self):

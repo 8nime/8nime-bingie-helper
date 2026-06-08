@@ -44,3 +44,6 @@ class ListItem:
 
     def setContentLookup(self, enable):
         pass
+
+    def setMimeType(self, mimetype):
+        self._mimetype = mimetype
