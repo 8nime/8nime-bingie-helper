@@ -24,16 +24,23 @@ PLUGIN_IDS = {
 }
 
 
+# Default to WatchNixtoons2: it (and Fanime) resolve episodes + movies +
+# specials directly, whereas Otaku's free sources are broken upstream. This
+# matches the settings.xml <default>. The setting still wins when the user picks
+# a provider via Change provider.
+_DEFAULT_PLAYBACK = PLAYBACK_WATCHNIXTOONS2
+
+
 def get_playback_plugin():
-    value = ADDON.getSetting("playback_plugin") or PLAYBACK_OTAKU
-    return PLUGIN_IDS.get(value, PLUGIN_IDS[PLAYBACK_OTAKU])
+    value = ADDON.getSetting("playback_plugin") or _DEFAULT_PLAYBACK
+    return PLUGIN_IDS.get(value, PLUGIN_IDS[_DEFAULT_PLAYBACK])
 
 
 def get_playback_key():
-    value = ADDON.getSetting("playback_plugin") or PLAYBACK_OTAKU
+    value = ADDON.getSetting("playback_plugin") or _DEFAULT_PLAYBACK
     if value in PLUGIN_IDS:
         return value
-    return PLAYBACK_OTAKU
+    return _DEFAULT_PLAYBACK
 
 
 def is_addon_installed(addon_id):

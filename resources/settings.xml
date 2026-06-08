@@ -33,7 +33,7 @@
       <group id="1" label="">
         <setting id="playback_plugin" type="string" label="32031" help="32032">
           <level>0</level>
-          <default>otaku</default>
+          <default>watchnixtoons2</default>
           <constraints>
             <options>
               <option label="32033">otaku</option>

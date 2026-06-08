@@ -90,6 +90,11 @@ TMDB_GENRE_MAP = {
     "10768": "Mecha",
 }
 
+# AniList caps perPage at 50; category/full-window browses show this many by
+# merging consecutive AniList pages (CATEGORY_VIEW_SIZE / 50 fetches per page).
+_ANILIST_PER_PAGE = 50
+CATEGORY_VIEW_SIZE = 100
+
 INFO_ROUTES = {
     "details": "details",
     "cast": "cast",
@@ -195,14 +200,26 @@ class RouteHandler:
             season, year = current_season_year()
         return season, f"{year}%"
 
-    def _browse(self, variables, trending=False, content="videos"):
-        page = self._page()
-        variables = dict(variables)
-        variables.setdefault("page", page)
-        variables.setdefault("perpage", self._limit())
-        variables.setdefault("isAdult", False)
+    def _browse(self, variables, trending=False, content="videos", view_size=None):
+        # AniList hard-caps perPage at 50, so a larger displayed page (e.g. 100 for
+        # category browses) is assembled by merging consecutive AniList pages. With
+        # the default view_size (<=50) this is one fetch, identical to before.
+        view_size = int(view_size or self._limit())
+        fetches = max(1, -(-view_size // _ANILIST_PER_PAGE))  # ceil(view_size / 50)
+        view_page = self._page()
+        base = dict(variables)
+        base.setdefault("isAdult", False)
+        base["perpage"] = _ANILIST_PER_PAGE
 
-        media, has_next = self.client.browse(variables, trending=trending)
+        media, has_next = [], False
+        for i in range(fetches):
+            vars_i = dict(base)
+            vars_i["page"] = (view_page - 1) * fetches + i + 1
+            page_media, has_next = self.client.browse(vars_i, trending=trending)
+            media.extend(page_media)
+            if not has_next:
+                break
+
         items = build_items(media)
         if items:
             xbmcplugin.addDirectoryItems(self.handle, [(li.getPath(), li, False) for li in items])
@@ -400,7 +417,7 @@ class RouteHandler:
         tmdb_type = "movie" if info == "dir_movie" else "tv"
         variables = self._media_vars(tmdb_type)
         variables["sort"] = ["POPULARITY_DESC", "SCORE_DESC"]
-        return self._browse(variables, trending=False)
+        return self._browse(variables, trending=False, view_size=CATEGORY_VIEW_SIZE)
 
     def dir_ova(self):
         """AniList OVA / ONA / Special browse (replaces the old Otaku OVA link)."""
@@ -409,7 +426,7 @@ class RouteHandler:
             "format": ["OVA", "ONA", "SPECIAL"],
             "sort": ["POPULARITY_DESC", "SCORE_DESC"],
         }
-        return self._browse(variables, trending=False)
+        return self._browse(variables, trending=False, view_size=CATEGORY_VIEW_SIZE)
 
     def dir_stub(self, info):
         label = info.replace("dir_", "").replace("_", " ").title()
