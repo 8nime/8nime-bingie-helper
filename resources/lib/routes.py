@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from urllib.parse import quote, urlencode
 
-import xbmc
 import xbmcaddon
 import xbmcgui
 import xbmcplugin
@@ -20,11 +19,6 @@ from resources.lib.titles import title_for_media
 
 ADDON = xbmcaddon.Addon()
 
-
-def _log(msg):
-    # INFO so it shows even without Kodi debug logging; "[8nime]" is easy to grep.
-    # Used to diagnose empty widget rows: was the route reached? how many items?
-    xbmc.log("[8nime] %s" % msg, xbmc.LOGINFO)
 
 USERLIST_SLUGS = {
     "imdb-top-rated-movies": {"sort": ["SCORE_DESC"], "format": ["MOVIE"]},
@@ -137,7 +131,6 @@ class RouteHandler:
 
     def run(self):
         info = self.params.get("info", "")
-        _log("route info=%r widget=%s params=%s" % (info, self.is_widget, dict(self.params)))
         if info in INFO_ROUTES:
             handler = getattr(InfoHandler(self.handle, self.params), INFO_ROUTES[info])
             return handler()
@@ -229,8 +222,6 @@ class RouteHandler:
                 break
 
         items = build_items(media)
-        _log("browse info=%r raw_media=%d items=%d has_next=%s vars=%s"
-             % (self.params.get("info"), len(media), len(items), has_next, variables))
         if items:
             xbmcplugin.addDirectoryItems(self.handle, [(li.getPath(), li, False) for li in items])
 
@@ -410,10 +401,8 @@ class RouteHandler:
             media, _ = self.client.search(
                 query, "ANIME", formats=None, page=1, per_page=10
             )
-        except Exception as exc:
-            _log("autocomplete search FAILED query=%r: %s" % (query, exc))
+        except Exception:
             media = []
-        _log("autocomplete query=%r results=%d" % (query, len(media or [])))
         base = f"{PLUGIN_URL}/?info=search&widget=true&tmdb_type=both&query="
         seen = set()
         for entry in media or []:

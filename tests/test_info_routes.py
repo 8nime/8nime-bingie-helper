@@ -6,6 +6,7 @@ import pytest
 import xbmcplugin
 
 from resources.lib.info_routes import InfoHandler
+import resources.lib.info_routes as info_routes
 import resources.lib.season_map as season_map
 
 
@@ -108,6 +109,8 @@ class TestSeasons:
         media = _media()
         h = InfoHandler(1, {"info": "seasons", "mal_id": "40748"})
         h.client = FakeClient(media)
+        # Pin ascending so season 1 lands first regardless of the sort-order default.
+        monkeypatch.setattr("resources.lib.info_routes._sort_descending", lambda: False)
         monkeypatch.setattr("resources.lib.info_routes.franchise_show_title", lambda f, t: "Demon Slayer")
         monkeypatch.setattr(h, "_franchise", lambda m=None: _two_season_franchise(media))
         h.seasons()
@@ -142,6 +145,9 @@ class TestTmdbSplitEpisodes:
         media.pop("nextAiringEpisode", None)  # treat as fully aired for the test
         h = InfoHandler(1, {"info": "episodes", "mal_id": "21", "season": "2"})
         h.client = FakeClient(media)
+        # Pin ascending so the local/absolute mapping reads in episode order; the
+        # display-vs-play mapping under test is independent of sort direction.
+        monkeypatch.setattr("resources.lib.info_routes._sort_descending", lambda: False)
         monkeypatch.setattr("resources.lib.info_routes.franchise_show_title", lambda f, t: "One Piece")
         monkeypatch.setattr(h, "_franchise", lambda m=None: _one_piece_split_franchise(media))
         # TMDB numbers One Piece episodes ABSOLUTELY (S2 -> episode_number 62..77),
@@ -160,6 +166,68 @@ class TestTmdbSplitEpisodes:
         assert first_label.startswith("1. ") and "Arc2 Ep62" in first_label
         assert "episode=62" in captured[0][1].getPath()   # absolute play (offset 61 + local 1)
         assert "episode=77" in captured[-1][1].getPath()  # offset 61 + local 16
+
+
+class TestSortOrder:
+    """The `sort_order` setting flips the display order of the seasons list and the
+    episode lists; default is newest-first (desc)."""
+
+    def test_descending_is_the_default(self, monkeypatch):
+        monkeypatch.setattr(info_routes._ADDON, "getSetting", lambda key: "")
+        assert info_routes._sort_descending() is True
+
+    def test_explicit_asc_disables_descending(self, monkeypatch):
+        monkeypatch.setattr(info_routes._ADDON, "getSetting", lambda key: "asc")
+        assert info_routes._sort_descending() is False
+
+    def test_explicit_desc_enables_descending(self, monkeypatch):
+        monkeypatch.setattr(info_routes._ADDON, "getSetting", lambda key: "DESC")
+        assert info_routes._sort_descending() is True
+
+    def test_ordered_reverses_when_descending(self, monkeypatch):
+        monkeypatch.setattr(info_routes, "_sort_descending", lambda: True)
+        assert info_routes._ordered([1, 2, 3]) == [3, 2, 1]
+
+    def test_ordered_preserves_when_ascending(self, monkeypatch):
+        monkeypatch.setattr(info_routes, "_sort_descending", lambda: False)
+        assert info_routes._ordered([1, 2, 3]) == [1, 2, 3]
+
+    def test_seasons_newest_first_by_default(self, monkeypatch, captured):
+        media = _media()
+        h = InfoHandler(1, {"info": "seasons", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr("resources.lib.info_routes._sort_descending", lambda: True)
+        monkeypatch.setattr("resources.lib.info_routes.franchise_show_title", lambda f, t: "Demon Slayer")
+        monkeypatch.setattr(h, "_franchise", lambda m=None: _two_season_franchise(media))
+        h.seasons()
+        assert len(captured) == 2
+        # newest season (S2, mal 99999) on top; S1 (mal 40748) last
+        assert captured[0][1].getProperty("mal_id") == "99999"
+        assert captured[-1][1].getProperty("mal_id") == "40748"
+        assert all(folder for (_u, _li, folder) in captured)
+
+    def test_episodes_newest_first_by_default(self, monkeypatch, captured):
+        media = _media()  # episodes=26, nextAiring 8 -> 7 aired
+        h = InfoHandler(1, {"info": "episodes", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr("resources.lib.info_routes._sort_descending", lambda: True)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: [])
+        h.episodes()
+        assert len(captured) == 7
+        # latest aired episode (7) on top, episode 1 last
+        assert "episode=7" in captured[0][1].getPath()
+        assert "episode=1" in captured[-1][1].getPath()
+
+    def test_episodes_oldest_first_when_ascending(self, monkeypatch, captured):
+        media = _media()
+        h = InfoHandler(1, {"info": "episodes", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr("resources.lib.info_routes._sort_descending", lambda: False)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: [])
+        h.episodes()
+        assert len(captured) == 7
+        assert "episode=1" in captured[0][1].getPath()
+        assert "episode=7" in captured[-1][1].getPath()
 
 
 class TestTraktUpNext:

@@ -3,6 +3,7 @@ import re
 from urllib.parse import urlencode, quote_plus
 
 import xbmc
+import xbmcaddon
 import xbmcgui
 import xbmcplugin
 
@@ -61,6 +62,23 @@ def _base_series_title(title):
     return base if base and base.lower() != title.lower() else None
 
 
+_ADDON = xbmcaddon.Addon()
+
+
+def _sort_descending():
+    """Display order for the seasons list + episode lists in More Info.
+
+    Controlled by the `sort_order` setting; defaults to newest-first (desc) so the
+    latest season/episode sits at the top of the list. Anything other than `asc`
+    is treated as desc (matches the settings.xml default)."""
+    return (_ADDON.getSetting("sort_order") or "desc").strip().lower() != "asc"
+
+
+def _ordered(items):
+    """Apply the configured display order to an already-ascending item list."""
+    return items[::-1] if _sort_descending() else items
+
+
 class InfoHandler:
     def __init__(self, handle, params):
         self.handle = handle
@@ -82,8 +100,6 @@ class InfoHandler:
 
     def _finish(self, items, content="videos", folders=None):
         folders = folders or set()
-        xbmc.log("[8nime] finish info=%r content=%s items=%d"
-                 % (self.params.get("info"), content, len(items)), xbmc.LOGINFO)
         for idx, li in enumerate(items):
             xbmcplugin.addDirectoryItem(self.handle, li.getPath(), li, idx in folders)
         xbmcplugin.setContent(self.handle, content)
@@ -421,7 +437,7 @@ class InfoHandler:
             )
             if li:
                 items.append(li)
-        return items
+        return _ordered(items)
 
     def _stream_plan(self, franchise):
         """Per-cour streamingEpisodes plan: (offsets, suppressed).
@@ -465,7 +481,7 @@ class InfoHandler:
         franchise = self._franchise(media)
         if not franchise:
             items = self._build_episode_list(media)
-            return self._finish(items, "episodes")
+            return self._finish(_ordered(items), "episodes")
         show_title = franchise_show_title(franchise, _title)
         offsets, suppressed = self._stream_plan(franchise)
         items = []
@@ -485,7 +501,7 @@ class InfoHandler:
                     play_offset=cour.get("_play_offset", 0),
                 )
             )
-        return self._finish(items, "episodes")
+        return self._finish(_ordered(items), "episodes")
 
     def seasons(self):
         media = self._media()
@@ -535,9 +551,9 @@ class InfoHandler:
                             play_offset=cour.get("_play_offset", 0),
                         )
                     )
-                return self._finish(items, "episodes")
+                return self._finish(_ordered(items), "episodes")
         items = self._build_episode_list(media, mal_id)
-        return self._finish(items, "episodes")
+        return self._finish(_ordered(items), "episodes")
 
     def collection(self):
         media = self._media()
@@ -753,13 +769,6 @@ class InfoHandler:
         except Exception as exc:
             xbmc.log("[8nime] WNT2 resolve failed: %s" % exc, xbmc.LOGWARNING)
             return None
-        xbmc.log(
-            "[8nime] WNT2 resolve ep %d (season=%d offset=%d): %s "
-            "(series=%r score=%.2f episode=%r)"
-            % (ep, season, offset, "hit" if url else "miss", dbg.get("series"),
-               dbg.get("score", 0.0), (dbg.get("episode") or {}).get("name")),
-            xbmc.LOGINFO,
-        )
         return url
 
     def _wnt2_play_item(self, mal_id, media, title, episode, is_movie):
@@ -777,11 +786,6 @@ class InfoHandler:
             except Exception as exc:
                 xbmc.log("[8nime] WNT2 movie resolve failed: %s" % exc, xbmc.LOGWARNING)
                 return None
-            xbmc.log(
-                "[8nime] WNT2 movie: %s (%r score=%.2f)"
-                % ("hit" if url else "miss", dbg.get("movie"), dbg.get("score", 0.0)),
-                xbmc.LOGINFO,
-            )
             if not url:
                 return None
             li = xbmcgui.ListItem(label=title, path=wnt2.actionresolve_url(url))
@@ -826,7 +830,6 @@ class InfoHandler:
             except Exception as exc:
                 xbmc.log("[8nime] Fanime movie resolve failed: %s" % exc, xbmc.LOGWARNING)
                 return None
-            kind = "movie"
         else:
             try:
                 ep_n = int(episode)
@@ -837,12 +840,6 @@ class InfoHandler:
             except Exception as exc:
                 xbmc.log("[8nime] Fanime resolve failed: %s" % exc, xbmc.LOGWARNING)
                 return None
-            kind = "ep %d" % ep_n
-        xbmc.log(
-            "[8nime] Fanime resolve %s: %s (series=%r score=%.2f)"
-            % (kind, "hit" if res else "miss", dbg.get("series"), dbg.get("score", 0.0)),
-            xbmc.LOGINFO,
-        )
         if not res or not res.get("stream"):
             return None
 

@@ -40,6 +40,22 @@ msgctxt "#32024"
 msgid "English"
 msgstr "English"
 
+msgctxt "#32025"
+msgid "Episode & season order"
+msgstr "Episode & season order"
+
+msgctxt "#32026"
+msgid "Order of the seasons list and episode lists in More Info. Newest first shows the latest season/episode at the top."
+msgstr "Order of the seasons list and episode lists in More Info. Newest first shows the latest season/episode at the top."
+
+msgctxt "#32027"
+msgid "Newest first"
+msgstr "Newest first"
+
+msgctxt "#32028"
+msgid "Oldest first"
+msgstr "Oldest first"
+
 msgctxt "#32030"
 msgid "Playback"
 msgstr "Playback"

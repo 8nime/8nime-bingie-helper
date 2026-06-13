@@ -27,6 +27,19 @@
             <heading>32021</heading>
           </control>
         </setting>
+        <setting id="sort_order" type="string" label="32025" help="32026">
+          <level>0</level>
+          <default>desc</default>
+          <constraints>
+            <options>
+              <option label="32027">desc</option>
+              <option label="32028">asc</option>
+            </options>
+          </constraints>
+          <control type="list" format="string">
+            <heading>32025</heading>
+          </control>
+        </setting>
       </group>
     </category>
     <category id="playback" label="32030" help="">

@@ -8,6 +8,7 @@ class Addon:
         self._settings = {
             "title_language": "english",
             "playback_plugin": "otaku",
+            "sort_order": "desc",
         }
         self._info = {
             "id": self._id,
