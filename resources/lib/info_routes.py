@@ -103,8 +103,49 @@ class InfoHandler:
         for idx, li in enumerate(items):
             xbmcplugin.addDirectoryItem(self.handle, li.getPath(), li, idx in folders)
         xbmcplugin.setContent(self.handle, content)
-        xbmcplugin.endOfDirectory(self.handle, succeeded=True)
+        self._add_sort_methods(content)
+        # cacheToDisc=False: Kodi caches plugin listings to disc by default and
+        # serves the stale copy on re-navigation, which masks sort-method/data
+        # changes (a listing built with only NONE keeps showing "Unsorted" with no
+        # working Sort menu). The helper already caches AniList/TMDB at the data
+        # layer, so re-running the route is cheap.
+        xbmcplugin.endOfDirectory(self.handle, succeeded=True, cacheToDisc=False)
         return True
+
+    def _add_sort_methods(self, content):
+        """Register native Kodi sort methods so the full-screen browse owns ordering.
+
+        A bare SORT_METHOD_NONE is honored for most content but IGNORED for
+        episode content -- Kodi's video window force-sorts episodes by number. So
+        for episodes we expose the real native methods: "Date added" (mapped from
+        each episode's air date) defaults to newest-first, with Episode and Title
+        also offered; Kodi remembers the chosen sort + direction per view. Other
+        listings (seasons, cast, ...) keep insertion order via NONE.
+        """
+        if content == "episodes":
+            # NONE first => default = the helper's emit order (newest-first via
+            # _ordered), the same way the seasons list defaults newest-first. Kodi
+            # has no "descending episode" default to register, so relying on a
+            # native method as default lands oldest-first ("inverted"). Episode/Date
+            # remain as drawer options the user can switch to (Kodi remembers).
+            methods = (
+                xbmcplugin.SORT_METHOD_NONE,
+                xbmcplugin.SORT_METHOD_EPISODE,
+                xbmcplugin.SORT_METHOD_DATEADDED,
+                xbmcplugin.SORT_METHOD_LABEL,
+            )
+        elif content == "seasons":
+            # NONE first keeps the helper's newest-first emit order as the default;
+            # Year/Label give Kodi's sort drawer real options to switch between.
+            methods = (
+                xbmcplugin.SORT_METHOD_NONE,
+                xbmcplugin.SORT_METHOD_VIDEO_YEAR,
+                xbmcplugin.SORT_METHOD_LABEL,
+            )
+        else:
+            methods = (xbmcplugin.SORT_METHOD_NONE,)
+        for method in methods:
+            xbmcplugin.addSortMethod(self.handle, method)
 
     def _media(self):
         mal_id = self._mal_id()
@@ -246,7 +287,7 @@ class InfoHandler:
     def _build_episode_list(
         self, media, mal_id=None, season=1, show_title=None, season_offset=0,
         suppress=False, tmdb_id=None, tmdb_season=None,
-        episode_count=None, play_offset=0,
+        episode_count=None, play_offset=0, tmdb_offset=0,
     ):
         mal_id = mal_id or media.get("idMal")
         if not mal_id or not media:
@@ -275,9 +316,12 @@ class InfoHandler:
             return []
 
         # Primary source for stills + episode names/plots is TMDB (real per-episode
-        # art for anime, which AniList lacks for many seasons), indexed by the
-        # season-local episode number (season_offset + local ep). For a standalone
-        # (non-franchise) show, resolve the mapping straight from the Fribb map.
+        # art for anime, which AniList lacks for many seasons), indexed by
+        # tmdb_offset + local ep. tmdb_offset is the cumulative count of prior cours
+        # that share this (tmdb_id, tmdb_season): 0 when each season has its own TMDB
+        # season, but the absolute position when TMDB lumps the whole franchise into
+        # one season (e.g. Re:Zero -> TMDB season 1 numbers all 4 seasons 1..85).
+        # For a standalone (non-franchise) show, resolve the mapping from Fribb.
         if not tmdb_id:
             tmdb_id, tmdb_season = season_map.tmdb_lookup(media.get("id"), mal_id)
         tmdb_eps = {}
@@ -312,7 +356,7 @@ class InfoHandler:
                 # number; fall back to a local key for shows TMDB numbers per-season.
                 meta = tmdb_eps.get(int(play_offset) + ep) or tmdb_eps.get(ep) or {}
             else:
-                meta = tmdb_eps.get(season_offset + ep) or {}
+                meta = tmdb_eps.get(tmdb_offset + ep) or {}
             thumb = meta.get("still") or thumb_for_episode(thumbs, ep, offset)
             # Display the season-local number (ep); for a TMDB-split season PLAY the
             # absolute AniList episode (offset + local) the search/Otaku backends key on.
@@ -473,6 +517,29 @@ class InfoHandler:
                     suppressed.add(id(cour))
         return offsets, suppressed
 
+    def _tmdb_offsets(self, franchise):
+        """Per-cour offset into a SHARED TMDB season.
+
+        Fribb maps every cour of some franchises to the same (tmdb_id, tmdb_season)
+        because TMDB lumps the whole show into one season with absolute episode
+        numbering -- e.g. Re:Zero's four anime seasons all map to TMDB season 1
+        (85 episodes numbered 1..85). The per-episode still/plot lookup must index
+        by the cumulative episode count of prior cours that share the same
+        (tmdb_id, tmdb_season), NOT the within-season streamingEpisodes offset
+        (which resets each season, so every season would show season-1 art).
+
+        A franchise whose seasons each carry a distinct tmdb_season gets 0 for every
+        cour (unchanged); a multi-cour single season gets the same within-season
+        cumulative as the streaming offset.
+        """
+        offsets = {}
+        running = {}
+        for cour in iter_cours(franchise):
+            key = (cour.get("tmdb_id"), cour.get("tmdb_season"))
+            offsets[id(cour)] = running.get(key, 0)
+            running[key] = running.get(key, 0) + int(cour.get("episodes") or 0)
+        return offsets
+
     def flatseasons(self):
         """All franchise episodes in one flat list across cours."""
         media = self._media()
@@ -484,6 +551,7 @@ class InfoHandler:
             return self._finish(_ordered(items), "episodes")
         show_title = franchise_show_title(franchise, _title)
         offsets, suppressed = self._stream_plan(franchise)
+        tmdb_offsets = self._tmdb_offsets(franchise)
         items = []
         for cour in iter_cours(franchise):
             cour_media = cour.get("media") or media
@@ -499,6 +567,7 @@ class InfoHandler:
                     tmdb_season=cour.get("tmdb_season"),
                     episode_count=cour.get("_episode_count"),
                     play_offset=cour.get("_play_offset", 0),
+                    tmdb_offset=tmdb_offsets.get(id(cour), 0),
                 )
             )
         return self._finish(_ordered(items), "episodes")
@@ -530,11 +599,12 @@ class InfoHandler:
             if group:
                 show_title = franchise_show_title(franchise, _title)
                 offsets, suppressed = self._stream_plan(franchise)
+                tmdb_offsets = self._tmdb_offsets(franchise)
                 items = []
                 # A season may aggregate several cours (split cours). Each cour
                 # keeps its own mal_id + local 1..N numbering so playback resolves
-                # correctly; the still thumbnail uses a season-local offset so the
-                # season's streamingEpisodes listing indexes correctly.
+                # correctly; season_offset indexes the season's streamingEpisodes
+                # listing, tmdb_offset the (possibly franchise-wide) TMDB season.
                 for cour in group.get("cours") or []:
                     cour_media = cour.get("media") or media
                     items.extend(
@@ -549,6 +619,7 @@ class InfoHandler:
                             tmdb_season=cour.get("tmdb_season"),
                             episode_count=cour.get("_episode_count"),
                             play_offset=cour.get("_play_offset", 0),
+                            tmdb_offset=tmdb_offsets.get(id(cour), 0),
                         )
                     )
                 return self._finish(_ordered(items), "episodes")

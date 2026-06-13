@@ -390,6 +390,10 @@ def build_episode_item(
     if ep_aired:
         info["aired"] = ep_aired
         info["premiered"] = ep_aired
+        # Mirror the air date into dateadded so Kodi's native "Date added" sort
+        # (which defaults to newest-first) orders the full-screen episode browse
+        # chronologically. TMDB hands us YYYY-MM-DD; Kodi wants a datetime.
+        info["dateadded"] = "%s 00:00:00" % ep_aired
     li.setInfo("video", info)
     if not art:
         art = _episode_art_from_media(media, episode, thumb_url=thumb_url) if media else {}

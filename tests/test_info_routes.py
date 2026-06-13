@@ -229,6 +229,97 @@ class TestSortOrder:
         assert "episode=1" in captured[0][1].getPath()
         assert "episode=7" in captured[-1][1].getPath()
 
+    def test_episodes_register_native_sort_methods(self, monkeypatch, captured):
+        # NONE first => default follows the helper's newest-first emit order; Episode
+        # and Date are offered in the drawer for the user to switch to.
+        calls = []
+        monkeypatch.setattr(xbmcplugin, "addSortMethod", lambda h, m: calls.append(m))
+        media = _media()
+        h = InfoHandler(1, {"info": "episodes", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: [])
+        h.episodes()
+        assert calls and calls[0] == xbmcplugin.SORT_METHOD_NONE
+        assert xbmcplugin.SORT_METHOD_EPISODE in calls
+        assert xbmcplugin.SORT_METHOD_DATEADDED in calls
+
+    def test_seasons_keep_insertion_order(self, monkeypatch, captured):
+        calls = []
+        monkeypatch.setattr(xbmcplugin, "addSortMethod", lambda h, m: calls.append(m))
+        media = _media()
+        h = InfoHandler(1, {"info": "seasons", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: [])
+        h.seasons()
+        # NONE first (default = newest-first emit order) + Year/Label for the drawer.
+        assert calls[0] == xbmcplugin.SORT_METHOD_NONE
+        assert xbmcplugin.SORT_METHOD_VIDEO_YEAR in calls
+
+
+class TestSharedTmdbSeason:
+    """Re:Zero shape: every anime season maps to the SAME TMDB id + season because
+    TMDB lumps the whole show into one season with absolute episode numbering
+    (id 65942 season 1 = 85 episodes spanning all 4 seasons). Each season's episode
+    list must index TMDB by the cumulative offset, not restart at 1 -- otherwise
+    every season showed season-1 stills/plots."""
+
+    def _media(self, mal, eps):
+        return {"idMal": mal, "id": mal, "format": "TV", "episodes": eps,
+                "title": {"english": "Re:Zero"}}
+
+    def _franchise(self):
+        counts = {1: 25, 2: 25, 3: 16, 4: 19}
+        groups = []
+        for season, eps in counts.items():
+            m = self._media(1000 + season, eps)
+            cour = {"media": m, "mal_id": m["idMal"], "season": season,
+                    "episodes": eps, "tmdb_id": 65942, "tmdb_season": 1}
+            groups.append({"season": season, "mal_id": m["idMal"], "media": m,
+                           "episodes": eps, "cours": [cour],
+                           "tmdb_id": 65942, "tmdb_season": 1})
+        return groups
+
+    def _tmdb_eps(self):
+        return {n: {"still": "http://img/%d.jpg" % n, "name": "TMDB ep %d" % n,
+                    "plot": "p%d" % n, "aired": ""} for n in range(1, 86)}
+
+    def _run(self, monkeypatch, captured, season, mal):
+        franchise = self._franchise()
+        media = franchise[season - 1]["media"]
+        h = InfoHandler(1, {"info": "episodes", "mal_id": str(mal), "season": str(season)})
+        h.client = FakeClient(media)
+        monkeypatch.setattr("resources.lib.info_routes._sort_descending", lambda: False)
+        monkeypatch.setattr("resources.lib.info_routes.franchise_show_title", lambda f, t: "Re:Zero")
+        monkeypatch.setattr(h, "_franchise", lambda m=None: franchise)
+        monkeypatch.setattr(
+            "resources.lib.tmdb.episode_stills",
+            lambda tid, season: self._tmdb_eps() if (tid == 65942 and season == 1) else {},
+        )
+        h.episodes()
+        return captured
+
+    def test_third_season_offset(self, monkeypatch, captured):
+        self._run(monkeypatch, captured, 3, 1003)
+        assert len(captured) == 16
+        # S3 ep1 -> TMDB absolute ep 51 (offset 25 + 25), last -> 66
+        assert "TMDB ep 51" in captured[0][1].label
+        assert "TMDB ep 66" in captured[-1][1].label
+
+    def test_fourth_season_offset(self, monkeypatch, captured):
+        self._run(monkeypatch, captured, 4, 1004)
+        assert len(captured) == 19
+        # S4 ep1 -> TMDB absolute ep 67 (offset 25 + 25 + 16), NOT ep 1
+        assert "TMDB ep 67" in captured[0][1].label
+        assert "TMDB ep 85" in captured[-1][1].label
+        # display number stays season-local
+        assert captured[0][1].label.startswith("1. ")
+
+    def test_first_season_unshifted(self, monkeypatch, captured):
+        self._run(monkeypatch, captured, 1, 1001)
+        assert len(captured) == 25
+        assert "TMDB ep 1" in captured[0][1].label
+        assert "TMDB ep 25" in captured[-1][1].label
+
 
 class TestTraktUpNext:
     def test_targets_next_unwatched_episode(self, monkeypatch, captured):
