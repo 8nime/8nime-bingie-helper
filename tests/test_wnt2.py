@@ -80,6 +80,91 @@ class TestMatchEpisode:
         assert wnt2.match_episode(self.EPS, 99) is None
 
 
+class TestEpisodeSeason:
+    def test_unmarked_is_one(self):
+        assert wnt2._episode_season("Episode 1 English Subbed") == 1
+
+    def test_season_marker(self):
+        assert wnt2._episode_season("Season 4 Episode 10 English Subbed") == 4
+
+    def test_ordinal_season(self):
+        assert wnt2._episode_season("2nd Season Episode 3") == 2
+
+    def test_roman_sequel(self):
+        assert wnt2._episode_season("Mushoku Tensei II: Jobless Reincarnation Episode 1") == 2
+
+
+class TestEpisodeNumberFractional:
+    def test_drops_fractional_special(self):
+        # "Episode 12.5" is a special; it must not collide with integer ep 12.
+        assert wnt2._episode_number("Season 2 Episode 12.5 English Dubbed") is None
+
+    def test_keeps_letter_suffix(self):
+        assert wnt2._episode_number("Episode 1B English Subbed") == 1
+
+
+class TestEpisodeLang:
+    def test_uses_data_lang_attr(self):
+        assert wnt2._episode_lang("Episode 1", "dub") == "dub"
+
+    def test_parses_dub_from_name(self):
+        assert wnt2._episode_lang("Episode 1 English Dubbed", None) == "dub"
+
+    def test_parses_sub_from_name(self):
+        assert wnt2._episode_lang("Episode 1 English Subbed", None) == "sub"
+
+    def test_unknown(self):
+        assert wnt2._episode_lang("Episode 1", None) is None
+
+
+class TestMatchesShow:
+    def test_bare_name_always_matches(self):
+        assert wnt2._matches_show("Episode 1 English Subbed", ["anything"]) is True
+
+    def test_spinoff_prefix_filtered(self):
+        # 'Visions of Coleus' is a spin-off embedded on the Slime page.
+        assert wnt2._matches_show(
+            "Visions of Coleus Episode 1 English Dubbed",
+            ["that time i got reincarnated as a slime"],
+        ) is False
+
+    def test_show_titled_episode_matches(self):
+        assert wnt2._matches_show(
+            "Mushoku Tensei: Jobless Reincarnation Episode 1 English Dubbed",
+            ["mushoku tensei jobless reincarnation"],
+        ) is True
+
+
+class TestMatchEpisodeSeasonAware:
+    # A wcostream-style aggregated list (newest season first), with an OVA and a
+    # fractional special that must lose to the real season-1 episode.
+    EPS = [
+        ("/s4e1", "Season 4 Episode 1 English Subbed", "sub"),
+        ("/s2e1", "Season 2 Episode 1 English Subbed", "sub"),
+        ("/s2e13", "Season 2 Episode 13 English Dubbed", "dub"),
+        ("/ova1", "OVA Episode 1 English Subbed", "sub"),
+        ("/sp", "Episode 1.5 English Subbed", "sub"),
+        ("/s1e1d", "Episode 1 English Dubbed", "dub"),
+        ("/s1e1s", "Episode 1 English Subbed", "sub"),
+    ]
+
+    def test_season_one_skips_newer_seasons_and_ova(self):
+        # The original bug: bare number match returned Season 4. Season-aware must
+        # return the unmarked season-1 episode, and a real one over the OVA.
+        assert wnt2.match_episode(self.EPS, 1, season=1) == ("/s1e1s", "Episode 1 English Subbed", "sub")
+
+    def test_targets_requested_season(self):
+        assert wnt2.match_episode(self.EPS, 1, season=4) == ("/s4e1", "Season 4 Episode 1 English Subbed", "sub")
+
+    def test_offset_maps_to_continuous_number(self):
+        # Split-cour part 2: cour-local ep1 + offset 12 -> wcostream Season 2 ep13.
+        hit = wnt2.match_episode(self.EPS, 1, season=2, offset=12)
+        assert hit == ("/s2e13", "Season 2 Episode 13 English Dubbed", "dub")
+
+    def test_offset_zero_is_part_one(self):
+        assert wnt2.match_episode(self.EPS, 1, season=2, offset=0) == ("/s2e1", "Season 2 Episode 1 English Subbed", "sub")
+
+
 class TestSearchSeriesParse:
     def test_parses_link_and_title(self):
         html = (

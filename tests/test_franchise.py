@@ -373,3 +373,137 @@ class TestCollectTvFranchise:
         # Only the FINISHED cour should appear
         assert len(result) == 1
         assert result[0]["mal_id"] == 16498
+
+    def test_upcoming_season_anchored_via_prequel(self):
+        """A not-yet-released season missing from Fribb is anchored on its mapped
+        PREQUEL: prior seasons recovered + the upcoming entry appended as the next
+        season (so it groups instead of rendering standalone)."""
+        compact = load_fixture("franchise_map.json")
+        _inject_season_map(compact)
+
+        m1 = _make_media(16498, 16498, year=2019)
+        m2 = _make_media(20958, 20958, status="FINISHED", year=2021)
+        upcoming = _make_media(30000, 30000, status="NOT_YET_RELEASED",
+                               episodes=0, year=2026)
+        # Not in the Fribb map; its PREQUEL is the mapped S2 (20958).
+        upcoming["relations"] = {"edges": [
+            {"relationType": "PREQUEL",
+             "node": {"id": 20958, "idMal": 20958, "type": "ANIME", "format": "TV"}},
+        ]}
+
+        client = MagicMock()
+        client.get_franchise_cache.return_value = None
+
+        def fake_get_media(mal_id=None, anilist_id=None):
+            return {16498: m1, 20958: m2, 30000: upcoming}.get(mal_id or anilist_id)
+
+        client.get_media.side_effect = fake_get_media
+        client.get_franchise_media.return_value = None
+
+        result = collect_tv_franchise(client, upcoming)
+        assert [g["season"] for g in result] == [1, 2, 3]
+        assert result[-1]["mal_id"] == 30000  # upcoming entry grouped, not standalone
+
+    def test_standalone_stays_standalone_when_no_prequel_mapping(self):
+        """No Fribb mapping and no mapped prequel -> still standalone (empty)."""
+        _reset_season_map()
+        client = MagicMock()
+        client.get_franchise_cache.return_value = None
+        client.get_media.return_value = None
+        media = _make_media(30001, 30001, status="NOT_YET_RELEASED")
+        media["relations"] = {"edges": []}
+        assert collect_tv_franchise(client, media) == []
+
+
+# Real One Piece TMDB season shape (subset): S1 East Blue=61, S2=16, S3=14.
+OP_SEASONS = [
+    {"season_number": 1, "episode_count": 61, "air_date": "1999-10-20"},
+    {"season_number": 2, "episode_count": 16, "air_date": None},
+    {"season_number": 3, "episode_count": 14, "air_date": None},
+]
+
+
+class TestTmdbSeasonSplit:
+    """A monolithic long-runner (One Piece: one AniList entry, no Fribb season
+    split, but many TMDB seasons) is fanned out by TMDB's season taxonomy."""
+
+    def _client(self):
+        c = MagicMock()
+        c.get_franchise_cache.return_value = None
+        return c
+
+    def _inject_one_piece(self, tvdb_members=None):
+        # tvdb 81797 carries only One Piece movies as members (is_tv=0) so the
+        # TVDB path yields no real split; tmdb 37854 enables the season split.
+        _inject_season_map(
+            {
+                "by_anilist": {"21": [81797, 1, 37854, None, None]},
+                "by_mal": {"21": [81797, 1, 37854, None, None]},
+                "tvdb_members": tvdb_members or {},
+            }
+        )
+        season_map._BY_TMDB = None
+        season_map._BY_TMDB_SRC = None
+
+    def test_splits_into_tmdb_seasons_with_offsets(self):
+        self._inject_one_piece()
+        media = _make_media(21, 21, episodes=1100)
+        with patch("resources.lib.tmdb.aired_seasons", return_value=OP_SEASONS):
+            result = collect_tv_franchise(self._client(), media)
+        assert [g["season"] for g in result] == [1, 2, 3]
+        assert [g["episodes"] for g in result] == [61, 16, 14]
+        assert [g["tmdb_season"] for g in result] == [1, 2, 3]
+        # cumulative absolute episode offsets used for playback numbering
+        assert [g["cours"][0]["_play_offset"] for g in result] == [0, 61, 77]
+        assert all(g["_tmdb_split"] for g in result)
+        assert all(g["mal_id"] == 21 for g in result)
+
+    def test_drops_future_arcs_beyond_aired(self):
+        self._inject_one_piece()
+        media = _make_media(21, 21, episodes=70)  # aired only into S2
+        with patch("resources.lib.tmdb.aired_seasons", return_value=OP_SEASONS):
+            result = collect_tv_franchise(self._client(), media)
+        assert [g["season"] for g in result] == [1, 2]  # S3 (offset 77 >= 70) dropped
+
+    def test_skipped_below_episode_gate_no_tmdb_call(self):
+        self._inject_one_piece()
+        media = _make_media(21, 21, episodes=12)  # normal cour, below long-runner gate
+        aired = MagicMock(return_value=OP_SEASONS)
+        with patch("resources.lib.tmdb.aired_seasons", aired):
+            result = collect_tv_franchise(self._client(), media)
+        assert result == []
+        aired.assert_not_called()  # no TMDB request on the hot path for normal shows
+
+    def test_skipped_when_single_tmdb_season(self):
+        self._inject_one_piece()
+        media = _make_media(21, 21, episodes=200)
+        with patch(
+            "resources.lib.tmdb.aired_seasons",
+            return_value=[{"season_number": 1, "episode_count": 200, "air_date": "x"}],
+        ):
+            result = collect_tv_franchise(self._client(), media)
+        assert result == []
+
+    def test_not_triggered_when_fribb_has_multi_season(self):
+        # AoT-style: Fribb already splits the franchise -> the TMDB split must not
+        # fire (it would wrongly re-split a correctly-seasoned show).
+        members = {
+            "81797": [
+                [21, 21, 1, 1, 37854, 1],
+                [2222, 2222, 2, 1, 37854, 2],
+            ]
+        }
+        self._inject_one_piece(tvdb_members=members)
+        media = _make_media(21, 21, episodes=1100)
+        sequel = _make_media(2222, 2222, episodes=50)
+        client = self._client()
+        client.get_media.side_effect = lambda mal_id=None, anilist_id=None: (
+            media if (mal_id == 21 or anilist_id == 21) else sequel
+        )
+        client.get_franchise_media.return_value = None
+        aired = MagicMock(return_value=OP_SEASONS)
+        with patch("resources.lib.tmdb.aired_seasons", aired):
+            result = collect_tv_franchise(client, media)
+        assert len(result) == 2
+        assert not any(g.get("_tmdb_split") for g in result)
+        aired.assert_not_called()

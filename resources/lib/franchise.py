@@ -35,6 +35,12 @@ from resources.lib import season_map
 # here to avoid an empty "Season N" with no episodes or thumbnails.
 AIRED_STATUSES = {"FINISHED", "RELEASING", "HIATUS"}
 
+# A monolithic long-runner (One Piece, Detective Conan, ...) is one AniList entry
+# with FAR more episodes than a normal cour. Only such entries are candidates for
+# the TMDB season-split; gating on aired count keeps the extra TMDB request off the
+# hot path for ordinary single-cour shows (the vast majority).
+_MONOLITH_MIN_EPISODES = 60
+
 
 def _start_sort_key(media):
     start = media.get("startDate") or {}
@@ -144,11 +150,153 @@ def _group(cours):
     return groups
 
 
+def _aired_count(media):
+    """AniList episodes that have aired (handles ongoing entries with null total)."""
+    total = int(media.get("episodes") or 0)
+    next_ep = int((media.get("nextAiringEpisode") or {}).get("episode") or 0)
+    if next_ep:
+        aired = next_ep - 1
+        return min(total, aired) if total else aired
+    return total
+
+
+def _tmdb_season_split(media, tmdb_id):
+    """Split a single monolithic AniList entry across TMDB's own seasons.
+
+    Some long-runners are ONE AniList entry (One Piece, Detective Conan, ...) but
+    TMDB divides them into many arc-seasons. AniList numbers their episodes
+    continuously (1..N); TMDB restarts each season. Each TMDB regular season
+    becomes a franchise 'season' group whose single synthetic cour points back at
+    the one AniList media, carrying the TMDB season number plus the cumulative
+    episode offset. That lets the episode list show season-local numbers + the
+    real TMDB stills/titles while still PLAYING the absolute AniList episode the
+    backends expect (offset + local). Returns [] when the show is not a monolithic
+    multi-season case (so normal shows are untouched).
+    """
+    from resources.lib import tmdb
+
+    seasons = tmdb.aired_seasons(tmdb_id)
+    if len(seasons) <= 1:
+        return []
+    seasons = sorted(seasons, key=lambda s: int(s.get("season_number") or 0))
+    aired_total = _aired_count(media)
+    first_count = int(seasons[0].get("episode_count") or 0)
+    # Only a genuine long-runner that plainly spans past TMDB season 1; this guards
+    # normal single-season shows that merely share a multi-season TMDB record.
+    if aired_total and first_count and aired_total <= first_count:
+        return []
+
+    groups = []
+    offset = 0
+    display = 0
+    for s in seasons:
+        count = int(s.get("episode_count") or 0)
+        if count < 1:
+            continue
+        # Skip arc-seasons entirely beyond what AniList has aired (future arcs);
+        # keep advancing the offset so later seasons stay correctly numbered.
+        if aired_total and offset >= aired_total:
+            offset += count
+            continue
+        display += 1
+        tmdb_season = int(s.get("season_number"))
+        cour = _cour_dict(media, display, tmdb_id, tmdb_season)
+        cour["episodes"] = count
+        cour["_episode_count"] = count
+        cour["_play_offset"] = offset
+        groups.append(
+            {
+                "season": display,
+                "mal_id": media.get("idMal"),
+                "media": media,
+                "episodes": count,
+                "cours": [cour],
+                "tmdb_id": tmdb_id,
+                "tmdb_season": tmdb_season,
+                "_tmdb_split": True,
+            }
+        )
+        offset += count
+    return groups if len(groups) > 1 else []
+
+
+def _prequel_anchor(client, media, max_hops=6):
+    """Walk PREQUEL relations back to the first ancestor with a Fribb TVDB mapping.
+
+    A just-announced / not-yet-released season isn't in the Fribb snapshot yet, so
+    its own lookup misses and the franchise can't be built. Its prior seasons ARE
+    mapped, so we follow the PREQUEL chain back to an anchor that resolves, and
+    build the franchise from there. Returns the anchor tvdb_id, or None.
+    """
+    seen = set()
+    current = media
+    for _ in range(max_hops):
+        mal = current.get("idMal")
+        if mal in seen:
+            break
+        seen.add(mal)
+        prequel = None
+        for edge in (current.get("relations") or {}).get("edges") or []:
+            if (edge.get("relationType") or "").upper() != "PREQUEL":
+                continue
+            node = edge.get("node") or {}
+            if (node.get("type") or "").upper() != "ANIME":
+                continue
+            if (node.get("format") or "").upper() not in ("TV", "TV_SHORT"):
+                continue
+            prequel = node
+            break
+        if not prequel or not prequel.get("idMal"):
+            break
+        tvdb_id, _season = season_map.lookup(prequel.get("id"), prequel.get("idMal"))
+        if tvdb_id:
+            return tvdb_id
+        # Mapping miss this far back too -> fetch the prequel's own relations and
+        # keep walking (its edges aren't carried on the related-node summary).
+        current = client.get_media(mal_id=prequel.get("idMal"))
+        if not current:
+            break
+    return None
+
+
+def _append_viewed_cour(result, media):
+    """Ensure the viewed entry shows as a season even when Fribb omits it.
+
+    A not-yet-released (or just-added) cour is dropped by `_aired`/absent from the
+    snapshot, so a franchise built from its prior seasons wouldn't list it. When the
+    viewed TV entry isn't covered by any cour, append it as the next season group so
+    the More-Info seasons list stays complete (build_season_item labels it Upcoming).
+    """
+    if not result:
+        return result
+    mal = media.get("idMal")
+    if not mal or (media.get("format") or "").upper() not in ("TV", "TV_SHORT"):
+        return result
+    for group in result:
+        for cour in group.get("cours") or []:
+            if cour.get("mal_id") == mal:
+                return result
+    next_season = max((int(g.get("season") or 0) for g in result), default=0) + 1
+    cour = _cour_dict(media, next_season)
+    return list(result) + [{
+        "season": next_season,
+        "mal_id": mal,
+        "media": media,
+        "episodes": int(media.get("episodes") or 0),
+        "cours": [cour],
+        "tmdb_id": None,
+        "tmdb_season": None,
+    }]
+
+
 def collect_tv_franchise(client, media):
-    """Return ordered season groups for a franchise, sourced ONLY from the Fribb
-    TVDB map -- no relation walking. An entry with no TVDB mapping (e.g. a brand
-    new or not-yet-released cour absent from the snapshot) yields no franchise, so
-    the caller renders it as a standalone show until Fribb catches up.
+    """Return ordered season groups for a franchise.
+
+    Primary source is the Fribb TVDB map (no relation walking). A monolithic
+    long-runner that AniList tracks as ONE entry but TMDB splits into many seasons
+    (One Piece, ...) produces no real Fribb split, so when the TVDB path yields 0
+    or 1 season we fall back to splitting by TMDB's own season taxonomy. An entry
+    with neither mapping renders as a standalone show.
     """
     if not media or not media.get("idMal"):
         return []
@@ -159,14 +307,38 @@ def collect_tv_franchise(client, media):
         return cached
 
     tvdb_id, _season = season_map.lookup(media.get("id"), media.get("idMal"))
-    if not tvdb_id:
-        return []
-    built = _fribb_cours(client, tvdb_id)
-    if not built:
-        return []
-    cours, complete = built
+    result = []
+    complete = True
+    if tvdb_id:
+        built = _fribb_cours(client, tvdb_id)
+        if built:
+            cours, complete = built
+            result = _group(cours)
 
-    result = _group(cours)
+    # Monolithic long-runner fallback: the TVDB path gave no real split, but TMDB
+    # may divide the show into many seasons. Rebuild from TMDB when so.
+    if len(result) <= 1 and _aired_count(media) > _MONOLITH_MIN_EPISODES:
+        tmdb_id, _tmdb_season = season_map.tmdb_lookup(media.get("id"), media.get("idMal"))
+        if tmdb_id:
+            split = _tmdb_season_split(media, tmdb_id)
+            if split:
+                result = split
+                complete = True
+
+    # Upcoming-season fallback: a not-yet-released cour isn't in the Fribb snapshot,
+    # so its own lookup missed and it rendered standalone. Anchor on a mapped
+    # PREQUEL to recover the prior seasons.
+    if not result and not tvdb_id:
+        anchor_tvdb = _prequel_anchor(client, media)
+        if anchor_tvdb:
+            built = _fribb_cours(client, anchor_tvdb)
+            if built:
+                cours, complete = built
+                result = _group(cours)
+
+    # The viewed entry may be dropped/absent from Fribb (not-yet-released); make
+    # sure it still appears as a season alongside the recovered prior seasons.
+    result = _append_viewed_cour(result, media)
 
     # Only memoize a fully-resolved build. A transiently truncated walk/extend is
     # returned for this call but left uncached so the next poll can heal it.

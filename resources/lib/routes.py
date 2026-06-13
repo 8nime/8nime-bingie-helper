@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from urllib.parse import quote, urlencode
 
+import xbmc
 import xbmcaddon
 import xbmcgui
 import xbmcplugin
@@ -14,10 +15,16 @@ from resources.lib.api import (
 )
 from resources.lib.constants import ADDON_ID, PLUGIN_URL
 from resources.lib.info_routes import InfoHandler
-from resources.lib.listitems import build_item, build_items
+from resources.lib.listitems import build_item, build_items, build_spotlight_item
 from resources.lib.titles import title_for_media
 
 ADDON = xbmcaddon.Addon()
+
+
+def _log(msg):
+    # INFO so it shows even without Kodi debug logging; "[8nime]" is easy to grep.
+    # Used to diagnose empty widget rows: was the route reached? how many items?
+    xbmc.log("[8nime] %s" % msg, xbmc.LOGINFO)
 
 USERLIST_SLUGS = {
     "imdb-top-rated-movies": {"sort": ["SCORE_DESC"], "format": ["MOVIE"]},
@@ -130,6 +137,7 @@ class RouteHandler:
 
     def run(self):
         info = self.params.get("info", "")
+        _log("route info=%r widget=%s params=%s" % (info, self.is_widget, dict(self.params)))
         if info in INFO_ROUTES:
             handler = getattr(InfoHandler(self.handle, self.params), INFO_ROUTES[info])
             return handler()
@@ -221,6 +229,8 @@ class RouteHandler:
                 break
 
         items = build_items(media)
+        _log("browse info=%r raw_media=%d items=%d has_next=%s vars=%s"
+             % (self.params.get("info"), len(media), len(items), has_next, variables))
         if items:
             xbmcplugin.addDirectoryItems(self.handle, [(li.getPath(), li, False) for li in items])
 
@@ -323,11 +333,20 @@ class RouteHandler:
         with_genres = self.params.get("with_genres", "")
         with_id = self.params.get("with_id", "False").lower() == "true"
         if with_genres:
+            key = with_genres.split(",")[0].strip()
             if with_id:
-                genre = TMDB_GENRE_MAP.get(with_genres.split(",")[0].strip(), "Action")
+                # with_id=True historically meant a numeric TMDB genre id. 8nime
+                # emits anime genre NAMES in the Genre.N.TMDb_ID slot, so map a
+                # known TMDB id, else accept a name as-is. Only a genuinely
+                # unknown numeric id is dropped -- never silently default to
+                # "Action", which made the genre panel show the wrong genre (G7).
+                genre = TMDB_GENRE_MAP.get(key)
+                if not genre and not key.isdigit():
+                    genre = key
             else:
-                genre = with_genres.split(",")[0].strip()
-            variables["includedGenres"] = [genre]
+                genre = key
+            if genre:
+                variables["includedGenres"] = [genre]
         sort_by = self.params.get("sort_by", "popularity.desc")
         if "score" in sort_by or "vote" in sort_by:
             variables["sort"] = ["SCORE_DESC", "POPULARITY_DESC"]
@@ -348,7 +367,7 @@ class RouteHandler:
         variables["year"] = year
         pick = self.client.random_pick(variables, trending=trending)
         if pick:
-            li = build_item(pick)
+            li = build_spotlight_item(pick)
             if li:
                 xbmcplugin.addDirectoryItem(self.handle, li.getPath(), li, False)
         xbmcplugin.setContent(self.handle, "videos")
@@ -391,8 +410,10 @@ class RouteHandler:
             media, _ = self.client.search(
                 query, "ANIME", formats=None, page=1, per_page=10
             )
-        except Exception:
+        except Exception as exc:
+            _log("autocomplete search FAILED query=%r: %s" % (query, exc))
             media = []
+        _log("autocomplete query=%r results=%d" % (query, len(media or [])))
         base = f"{PLUGIN_URL}/?info=search&widget=true&tmdb_type=both&query="
         seen = set()
         for entry in media or []:

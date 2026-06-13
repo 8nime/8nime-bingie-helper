@@ -49,7 +49,33 @@ _EPISODE_RE = re.compile(
 )
 _EPISODE_START, _EPISODE_END = 'name="pid"', "<!--CAT PAGE"
 
-_EP_NUM_RE = re.compile(r"episode\s+0*(\d+)", re.IGNORECASE)
+# Integer episode number only -- the negative lookahead (no trailing digit or dot)
+# drops fractional specials ("Episode 12.5", "Episode 24.9") so they don't collide
+# with the real episode 12/24 (without it, \d+ backtracks and matches "1" of "12.5").
+_EP_NUM_RE = re.compile(r"episode\s+0*(\d+)(?![\d.])", re.IGNORECASE)
+
+# wcostream tags a season three different ways across (and within) shows:
+#   "Season N Episode M"      -> Slime, Re:Zero
+#   "Nth Season"              -> occasional
+#   sequel roman numeral      -> "Mushoku Tensei II ..." (numbering restarts)
+# Season 1 carries NO marker. _episode_season() checks these widest-first.
+_SEASON_NUM_RE = re.compile(r"season[\s\-]+0*(\d+)", re.IGNORECASE)
+_ORDINAL_SEASON_RE = re.compile(r"\b0*(\d+)(?:st|nd|rd|th)\s+season", re.IGNORECASE)
+_ROMAN_SEQUEL_RE = re.compile(r"\b(i{2,3}|iv)\b")
+_ROMAN_SEQUEL = {"ii": 2, "iii": 3, "iv": 4}
+_PART_RE = re.compile(r"\bpart\s+0*(\d+)", re.IGNORECASE)
+# Trailing "(Season N )?(Part N )?Episode M" + the English Sub/Dub suffix, peeled
+# off an episode name to leave its series-name prefix (empty for bare "Episode N").
+_LANG_SUFFIX_RE = re.compile(r"\s*(?:english\s+)?(?:sub(?:bed)?|dub(?:bed)?)\s*$", re.IGNORECASE)
+_EP_TAIL_RE = re.compile(
+    r"(?:season\s+\d+\s+)?(?:part\s+\d+\s+)?episode\s+[\d.]+\s*[ab]?\s*$", re.IGNORECASE
+)
+# Side content that must never win over a real numbered episode of the season.
+_SIDE_RE = re.compile(
+    r"\b(ova|oad|ona|movie|film|special|recap|digression|picture\s+drama|"
+    r"preview|trailer|nced|ncop|bonus|short)\b",
+    re.IGNORECASE,
+)
 
 # wcostream keeps movies on a separate /movie-list page (NOT in series search).
 # makeMoviesSearchCatalog slices from '"ddmcc"' and substring-filters by query.
@@ -172,16 +198,106 @@ def _episode_number(name):
     return int(m.group(1)) if m else None
 
 
-def match_episode(episodes, number, lang="sub"):
-    """Return (link, name, type) for episode ``number``, preferring ``lang``."""
-    hits = [(l, n, t) for (l, n, t) in episodes if _episode_number(n) == number]
-    if not hits:
-        return None
-    if lang:
-        for l, n, t in hits:
-            if not t or t == lang:
-                return (l, n, t)
-    return hits[0]
+def _episode_season(name):
+    """wcostream season ordinal for an episode name (1 when unmarked)."""
+    text = name or ""
+    m = _SEASON_NUM_RE.search(text) or _ORDINAL_SEASON_RE.search(text)
+    if m:
+        return int(m.group(1))
+    m = _ROMAN_SEQUEL_RE.search(text.lower())
+    if m:
+        return _ROMAN_SEQUEL[m.group(1).lower()]
+    return 1
+
+
+def _episode_lang(name, lang_attr):
+    """sub/dub for an episode: the data-lang attribute when present, else parsed
+    from the title ("... English Dubbed"). None when neither tells us."""
+    if lang_attr:
+        return lang_attr
+    low = (name or "").lower()
+    if "dub" in low:
+        return "dub"
+    if "sub" in low:
+        return "sub"
+    return None
+
+
+def _episode_prefix(name):
+    """The series-name portion of an episode title, normalized (empty for a bare
+    "Episode N"). 'Mushoku Tensei II: ... Episode 1 English Dubbed' ->
+    'mushoku tensei ii jobless reincarnation'."""
+    stripped = _LANG_SUFFIX_RE.sub("", name or "").strip()
+    return _norm(_EP_TAIL_RE.sub("", stripped))
+
+
+def _matches_show(name, titles, min_score=0.6):
+    """True when an episode is a real episode of THIS series: its name-prefix is
+    bare (just "Episode N") or fuzzily matches one of the show's titles. Filters
+    out embedded spin-offs ('Visions of Coleus Episode 1' on the Slime page)."""
+    prefix = _episode_prefix(name)
+    if not prefix:
+        return True
+    norm_titles = [_norm(t) for t in titles if t]
+    return max((_pair_score(prefix, t) for t in norm_titles), default=0.0) >= min_score
+
+
+def match_episode(episodes, number, season=1, offset=0, lang="sub", titles=None):
+    """Best episode-page (link, name, type) for a season+episode, or None.
+
+    wcostream aggregates every season -- plus OVAs, movies and spin-offs -- of a
+    series into one newest-first list, so a bare episode-number match plays the
+    NEWEST season (the original bug: Slime S1 ep1 -> Season 4 ep1). Each candidate
+    is scored, in priority order, by: how close its season tag is to the requested
+    ``season``; whether it's a real episode (not side content); whether it belongs
+    to this show (not an embedded spin-off); the requested ``lang``; continuous
+    numbering over a "Part N" re-upload; and earliest listing.
+
+    ``offset`` is the episode count of earlier cours in the SAME season -- wcostream
+    usually numbers a season's cours continuously (Slime "Season 2 Part 2 ep1" ==
+    "Season 2 Episode 13"), so the offset-applied number is tried before the raw
+    cour-local one.
+    """
+    season = int(season or 1)
+    titles = titles or []
+    target = number + int(offset or 0)
+
+    indexed = []
+    for idx, (link, name, lang_attr) in enumerate(episodes):
+        epn = _episode_number(name)
+        if epn is None:
+            continue
+        indexed.append(
+            (
+                idx,
+                link,
+                name,
+                _episode_lang(name, lang_attr),
+                epn,
+                _episode_season(name),
+                bool(_SIDE_RE.search(name or "")),
+                _matches_show(name, titles),
+                bool(_PART_RE.search(name or "")),
+            )
+        )
+
+    def sort_key(c):
+        _idx, _link, _name, c_lang, _epn, c_season, c_side, c_show, c_part = c
+        return (
+            abs(c_season - season),                 # nearest requested season
+            0 if not c_side else 1,                 # real episode over side content
+            0 if c_show else 1,                     # this show, not a spin-off
+            0 if (not c_lang or c_lang == lang) else 1,  # requested language
+            0 if not c_part else 1,                 # continuous numbering over a Part-N reupload
+            -_idx,                                  # earliest listing on ties
+        )
+
+    for num in (target, number) if target != number else (number,):
+        pool = [c for c in indexed if c[4] == num]
+        if pool:
+            best = min(pool, key=sort_key)
+            return (best[1], best[2], best[3])
+    return None
 
 
 def movie_list(base_url, session=None):
@@ -226,15 +342,20 @@ def resolve_movie_url(titles, base_url, lang="sub", min_score=0.6):
     return chosen[1], debug
 
 
-def resolve_episode_url(titles, number, base_url, lang="sub", min_score=0.55):
+def resolve_episode_url(titles, number, base_url, lang="sub", min_score=0.55,
+                        season=1, offset=0):
     """Find the wcostream episode-page URL for episode ``number`` of a series.
 
     ``titles`` is an ordered list of search candidates (anime-planet slug first,
-    then AniList romaji/english). Returns (episode_url, debug) where debug is a
+    then AniList romaji/english). ``season``/``offset`` make the episode match
+    season-aware (see match_episode): wcostream lists every season of a series in
+    one page, so the AniList cour's franchise season + intra-season episode offset
+    are needed to pin the right one. Returns (episode_url, debug) where debug is a
     dict describing what matched, for logging / dry-run output.
     """
     session = requests.session()
-    debug = {"tried": [], "series": None, "score": 0.0, "episodes": 0}
+    debug = {"tried": [], "series": None, "score": 0.0, "episodes": 0,
+             "season": season, "offset": offset}
     for title in [t for t in titles if t]:
         results = search_series(title, base_url, session)
         debug["tried"].append({"query": title, "results": len(results)})
@@ -247,7 +368,8 @@ def resolve_episode_url(titles, number, base_url, lang="sub", min_score=0.55):
         debug.update({"series": name, "series_url": link, "score": score})
         eps = episode_list(link, base_url, session)
         debug["episodes"] = len(eps)
-        hit = match_episode(eps, number, lang)
+        hit = match_episode(eps, number, season=season, offset=offset,
+                            lang=lang, titles=titles)
         if hit:
             debug["episode"] = {"name": hit[1], "type": hit[2], "url": hit[0]}
             return hit[0], debug

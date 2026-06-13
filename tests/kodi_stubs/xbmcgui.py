@@ -1,6 +1,64 @@
 # -*- coding: utf-8 -*-
 """Minimal xbmcgui stub for running addon code outside Kodi."""
 
+NOTIFICATION_INFO = "info"
+NOTIFICATION_WARNING = "warning"
+NOTIFICATION_ERROR = "error"
+
+
+class _Control:
+    """Stand-in for a Kodi list control (Window.getControl result)."""
+
+    def __init__(self):
+        self._items = []
+
+    def reset(self):
+        self._items = []
+
+    def addItem(self, item):
+        self._items.append(item)
+
+
+class Window:
+    """Window with a per-id property store so tests can assert set/clear."""
+
+    _store = {}
+
+    def __init__(self, window_id=0):
+        self.window_id = window_id
+        Window._store.setdefault(window_id, {})
+
+    def setProperty(self, key, value):
+        Window._store.setdefault(self.window_id, {})[key] = str(value)
+
+    def getProperty(self, key):
+        return Window._store.get(self.window_id, {}).get(key, "")
+
+    def clearProperty(self, key):
+        Window._store.get(self.window_id, {}).pop(key, None)
+
+    def getControl(self, control_id):
+        return _Control()
+
+
+class Dialog:
+    """No-op dialog; select/yesno return defaults overridable in tests."""
+
+    def notification(self, heading, message, icon="", time=5000, sound=True):
+        pass
+
+    def ok(self, heading, message):
+        return True
+
+    def yesno(self, heading, message, *args, **kwargs):
+        return True
+
+    def textviewer(self, heading, text, usemono=False):
+        pass
+
+    def select(self, heading, options, **kwargs):
+        return 0
+
 
 class ListItem:
     def __init__(self, label="", label2="", path=""):

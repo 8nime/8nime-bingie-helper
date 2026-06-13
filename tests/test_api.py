@@ -314,6 +314,32 @@ class TestAniListClientBrowse:
         # page=1, per_page=50 => next page (2*50=100) is within 5000 => has_next=True
         assert has_next is True
 
+    def test_browse_season_includes_not_yet_released(self, client):
+        # Seasonal rows (this/next season) must NOT exclude NOT_YET_RELEASED, else
+        # early-season + upcoming lineups come back empty (the live-test bug).
+        page_data = {"data": {"Page": {"pageInfo": {"hasNextPage": False}, "media": []}}}
+        client._session.post.return_value = _mock_response(page_data)
+        cache = MagicMock()
+        cache.get.return_value = None
+        cache.get_stale.return_value = None
+        with patch("resources.lib.api._CACHE", cache):
+            client.browse({"type": "ANIME", "season": "SUMMER", "year": "2026%", "page": 1, "perpage": 50})
+        variables = client._session.post.call_args[1]["json"]["variables"]
+        # [] (not None) -- AniList 500s on status_not_in: null but accepts [].
+        assert variables["statusNotIn"] == []
+
+    def test_browse_global_excludes_not_yet_released(self, client):
+        # Season-less (global popular/discover) browses keep excluding unreleased.
+        page_data = {"data": {"Page": {"pageInfo": {"hasNextPage": False}, "media": []}}}
+        client._session.post.return_value = _mock_response(page_data)
+        cache = MagicMock()
+        cache.get.return_value = None
+        cache.get_stale.return_value = None
+        with patch("resources.lib.api._CACHE", cache):
+            client.browse({"type": "ANIME", "page": 1, "perpage": 50})
+        variables = client._session.post.call_args[1]["json"]["variables"]
+        assert variables["statusNotIn"] == ["NOT_YET_RELEASED"]
+
     def test_browse_trending_uses_trending_query(self, client):
         page_data = {"data": {"Page": {"pageInfo": {"hasNextPage": False}, "media": []}}}
         client._session.post.return_value = _mock_response(page_data)
@@ -428,3 +454,42 @@ class TestAniListClientResolveMalId:
     def test_returns_none_for_empty_params(self, client):
         result = client.resolve_mal_id({})
         assert result is None
+
+
+class TestSaveMediaScoreFavorites:
+    """favorites/watchlist sync toggles AniList PLANNING membership (My List)."""
+
+    def _client(self, client, on_list, post_result):
+        client.has_token = MagicMock(return_value=True)
+        client.get_media = MagicMock(return_value={"id": 99, "format": "TV"})
+        entries = [{"media": {"id": 99}}] if on_list else [{"media": {"id": 7}}]
+        client._list_entries = MagicMock(return_value=entries)
+        client._post = MagicMock(return_value=post_result)
+        return client
+
+    def test_favorites_adds_when_absent(self, client):
+        c = self._client(client, on_list=False, post_result={"SaveMediaListEntry": {"id": 1, "status": "PLANNING"}})
+        ok, action = c.save_media_score(40748, "favorites")
+        assert ok is True
+        assert action == "added"
+        # PLANNING save mutation issued with the resolved media id
+        variables = c._post.call_args[0][1]
+        assert variables == {"mediaId": 99, "status": "PLANNING"}
+
+    def test_favorites_removes_when_present(self, client):
+        c = self._client(client, on_list=True, post_result={"DeleteMediaListEntry": {"deleted": True}})
+        ok, action = c.save_media_score(40748, "favorites")
+        assert ok is True
+        assert action == "removed"
+        assert "DeleteMediaListEntry" in c._post.call_args[0][0]
+
+    def test_watchlist_alias_behaves_like_favorites(self, client):
+        c = self._client(client, on_list=False, post_result={"SaveMediaListEntry": {"id": 2}})
+        ok, action = c.save_media_score(40748, "watchlist")
+        assert (ok, action) == (True, "added")
+
+    def test_favorites_without_token_is_noop(self, client):
+        client.has_token = MagicMock(return_value=False)
+        ok, reason = client.save_media_score(40748, "favorites")
+        assert ok is False
+        assert reason == "not_logged_in"

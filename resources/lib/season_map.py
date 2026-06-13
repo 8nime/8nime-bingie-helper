@@ -42,6 +42,10 @@ _BY_ANILIST = {}
 _BY_MAL = {}
 _TVDB_MEMBERS = {}
 _META = {}
+# Lazy reverse index: tmdb_id -> [member-rec, ...]. Rebuilt whenever _TVDB_MEMBERS
+# is reassigned (id() guard), so _load()/_save() and tests invalidate it for free.
+_BY_TMDB = None
+_BY_TMDB_SRC = None
 
 
 # --------------------------------------------------------------------------- #
@@ -109,12 +113,26 @@ def build_compact(data):
         if not isinstance(tvdb_id, int):
             continue
         season = _season_of(entry)
-        if season is None:
-            continue
         anilist_id = entry.get("anilist_id")
         mal_id = entry.get("mal_id")
         tmdb_id, tmdb_season = _tmdb_of(entry)
         ap_slug = _anime_planet_of(entry)
+        if season is None:
+            # Fribb omits the `season` block for an AniList entry that maps 1:1 to
+            # the WHOLE TVDB series (e.g. One Piece, which TVDB never split). Such
+            # entries used to be dropped entirely, so the skin got a surrogate
+            # tmdb_id and the show could never resolve its real TMDB season list.
+            # Record them for id lookups (season axis defaults to 1) so tmdb_lookup
+            # returns the real id -> the TMDB season-split path (franchise.py) can
+            # fan a monolithic long-runner out into its real seasons. We do NOT add
+            # them to tvdb_members: that would inject a spurious season into any
+            # franchise sharing the tvdb_id (48 of these 73 entries do). The
+            # mal_id the skin always carries makes the tvdb reverse-index moot here.
+            if isinstance(anilist_id, int):
+                by_anilist[str(anilist_id)] = [tvdb_id, 1, tmdb_id, tmdb_season, ap_slug]
+            if isinstance(mal_id, int):
+                by_mal[str(mal_id)] = [tvdb_id, 1, tmdb_id, tmdb_season, ap_slug]
+            continue
         is_tv = 1 if (entry.get("type") or "").upper() in TV_TYPES else 0
         if isinstance(anilist_id, int):
             by_anilist[str(anilist_id)] = [tvdb_id, season, tmdb_id, tmdb_season, ap_slug]
@@ -323,30 +341,69 @@ def anime_planet_title(anilist_id=None, mal_id=None):
     return None
 
 
-def members(tvdb_id):
-    """Return franchise members for a TVDB series.
+def _member_dict(rec):
+    """Convert a raw tvdb_members record to the public member dict, or None.
 
-    Each member: {anilist, mal, season (tvdb), is_tv, tmdb_id, tmdb_season}.
+    Member: {anilist, mal, season (tvdb), is_tv, tmdb_id, tmdb_season}.
     tmdb_id / tmdb_season may be None when Fribb carries no TMDB mapping.
     """
+    try:
+        return {
+            "anilist": rec[0],
+            "mal": rec[1],
+            "season": int(rec[2]),
+            "is_tv": bool(rec[3]),
+            "tmdb_id": rec[4] if len(rec) > 4 else None,
+            "tmdb_season": rec[5] if len(rec) > 5 else None,
+        }
+    except (IndexError, TypeError, ValueError):
+        return None
+
+
+def members(tvdb_id):
+    """Return franchise members for a TVDB series (see _member_dict for shape)."""
     _load()
     if tvdb_id is None or not _intable(tvdb_id):
         return []
     out = []
     for rec in _TVDB_MEMBERS.get(str(int(tvdb_id))) or []:
-        try:
-            out.append(
-                {
-                    "anilist": rec[0],
-                    "mal": rec[1],
-                    "season": int(rec[2]),
-                    "is_tv": bool(rec[3]),
-                    "tmdb_id": rec[4] if len(rec) > 4 else None,
-                    "tmdb_season": rec[5] if len(rec) > 5 else None,
-                }
-            )
-        except (IndexError, TypeError, ValueError):
-            continue
+        member = _member_dict(rec)
+        if member is not None:
+            out.append(member)
+    return out
+
+
+def _ensure_by_tmdb():
+    """Build/refresh the lazy tmdb_id -> [member-rec, ...] reverse index."""
+    global _BY_TMDB, _BY_TMDB_SRC
+    if _BY_TMDB is not None and _BY_TMDB_SRC == id(_TVDB_MEMBERS):
+        return _BY_TMDB
+    index = {}
+    for recs in _TVDB_MEMBERS.values():
+        for rec in recs:
+            tmdb_id = rec[4] if isinstance(rec, list) and len(rec) > 4 else None
+            if not isinstance(tmdb_id, int):
+                continue
+            index.setdefault(str(tmdb_id), []).append(rec)
+    _BY_TMDB = index
+    _BY_TMDB_SRC = id(_TVDB_MEMBERS)
+    return _BY_TMDB
+
+
+def members_for_tmdb(tmdb_id):
+    """Reverse of members(): franchise members Fribb maps to a TMDB tv id, or [].
+
+    Turns an inbound (skin-facing) tmdb_id back into AniList/MAL entries. One TMDB
+    id may map to many cours; callers disambiguate by season.
+    """
+    _load()
+    if tmdb_id is None or not _intable(tmdb_id):
+        return []
+    out = []
+    for rec in _ensure_by_tmdb().get(str(int(tmdb_id))) or []:
+        member = _member_dict(rec)
+        if member is not None:
+            out.append(member)
     return out
 
 

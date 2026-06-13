@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import re
 from urllib.parse import urlencode, quote_plus
 
 import xbmc
@@ -40,7 +41,24 @@ from resources.lib.playback import (
     log_missing_plugin,
     resolve_play_path,
 )
-from resources.lib import season_map, tmdb, wnt2, fanimef
+from resources.lib import season_map, tmdb, wnt2, fanimef, identity
+
+# A trailing season/part/cour marker on a cour title ("X Season 2", "X 2nd Season
+# Part II", "X Cour 2"). Stripped to recover the base series name for searching.
+_SEASON_SUFFIX_RE = re.compile(
+    r"\s+(?:season\s+\d+|\d+(?:st|nd|rd|th)\s+season|cour\s+\d+|part\s+(?:\d+|[ivxlc]+))"
+    r"(?:\s+part\s+(?:\d+|[ivxlc]+))?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _base_series_title(title):
+    """The base series name with a trailing season/part marker removed, or None
+    when there's no marker (so callers only add a genuinely-different base)."""
+    if not title:
+        return None
+    base = _SEASON_SUFFIX_RE.sub("", title).strip()
+    return base if base and base.lower() != title.lower() else None
 
 
 class InfoHandler:
@@ -51,7 +69,10 @@ class InfoHandler:
         self.cacheonly = self.params.get("cacheonly", "").lower() == "true"
 
     def _mal_id(self):
-        return self.client.resolve_mal_id(self.params)
+        # tmdb_id-aware: inbound calls may carry a real/surrogate tmdb_id (skin
+        # buttons, the 17195 details path) instead of mal_id; identity reverse-maps
+        # it. mal_id still wins when present; query/anilist_id fall back.
+        return identity.resolve_mal_id(self.params, self.client)
 
     def _limit(self):
         try:
@@ -61,6 +82,8 @@ class InfoHandler:
 
     def _finish(self, items, content="videos", folders=None):
         folders = folders or set()
+        xbmc.log("[8nime] finish info=%r content=%s items=%d"
+                 % (self.params.get("info"), content, len(items)), xbmc.LOGINFO)
         for idx, li in enumerate(items):
             xbmcplugin.addDirectoryItem(self.handle, li.getPath(), li, idx in folders)
         xbmcplugin.setContent(self.handle, content)
@@ -78,20 +101,25 @@ class InfoHandler:
         if not media:
             xbmcplugin.endOfDirectory(self.handle, succeeded=self.cacheonly)
             return True
-        items = []
+        is_movie = (media.get("format") or "").upper() in ("MOVIE", "ONE_SHOT")
         detail = build_detail_item(media)
-        if detail:
-            items.append(detail)
+        items = [detail] if detail else []
         folders = set()
-        if not self.cacheonly:
-            mal_id = media.get("idMal")
-            is_movie = (media.get("format") or "").upper() in ("MOVIE", "ONE_SHOT")
-            if not is_movie and mal_id:
-                items.append(
-                    build_season_item(mal_id, _title(media), media.get("episodes") or 0)
-                )
-                folders.add(1)
-        content = "movies" if (media.get("format") or "").upper() == "MOVIE" else "tvshows"
+        if detail and not is_movie:
+            latest = self._latest_episode(media)
+            if latest:
+                detail.setProperty("LatestEpisode", str(latest))
+        # The seasons enumeration + TMDB counts are the slow part, so gate them
+        # behind a live (non-cacheonly) load: the dialog opens instantly from
+        # cache, and the one request also yields the full seasons list + totals.
+        if not self.cacheonly and not is_movie and media.get("idMal"):
+            franchise = self._franchise(media)
+            if detail:
+                self._apply_franchise_totals(detail, media, franchise)
+            start = len(items)
+            items.extend(self._season_items(media, franchise))
+            folders.update(range(start, len(items)))
+        content = "movies" if is_movie else "tvshows"
         return self._finish(items, content, folders)
 
     def cast(self):
@@ -202,6 +230,7 @@ class InfoHandler:
     def _build_episode_list(
         self, media, mal_id=None, season=1, show_title=None, season_offset=0,
         suppress=False, tmdb_id=None, tmdb_season=None,
+        episode_count=None, play_offset=0,
     ):
         mal_id = mal_id or media.get("idMal")
         if not mal_id or not media:
@@ -220,6 +249,12 @@ class InfoHandler:
         # (unaired) episodes were shown.
         next_ep = int((media.get("nextAiringEpisode") or {}).get("episode") or 0)
         last = min(total, (next_ep - 1) if next_ep else total)
+        if episode_count is not None:
+            # TMDB-split season of a monolithic long-runner: `total`/`last` above are
+            # the show's ABSOLUTE aired count; this season lists season-local
+            # 1..episode_count, capped to whatever of the absolute run has aired
+            # past this season's offset.
+            last = max(0, min(int(episode_count), last - int(play_offset)))
         if last < 1:
             return []
 
@@ -249,16 +284,29 @@ class InfoHandler:
             else:
                 thumbs = {}
 
+        is_split = episode_count is not None
+        total_eps = int(episode_count) if is_split else total
         items = []
         for ep in range(1, last + 1):
-            meta = tmdb_eps.get(season_offset + ep) or {}
+            if is_split:
+                # TMDB numbers a monolithic long-runner's per-season episodes
+                # ABSOLUTELY (One Piece Wano S21 -> episode_number 892..1088), not
+                # season-local. The cumulative play_offset is derived from the same
+                # TMDB episode counts, so play_offset + local == TMDB's absolute
+                # number; fall back to a local key for shows TMDB numbers per-season.
+                meta = tmdb_eps.get(int(play_offset) + ep) or tmdb_eps.get(ep) or {}
+            else:
+                meta = tmdb_eps.get(season_offset + ep) or {}
             thumb = meta.get("still") or thumb_for_episode(thumbs, ep, offset)
+            # Display the season-local number (ep); for a TMDB-split season PLAY the
+            # absolute AniList episode (offset + local) the search/Otaku backends key on.
+            play_episode = (int(play_offset) + ep) if is_split else ep
             items.append(
                 build_episode_item(
                     mal_id,
                     ep,
                     title,
-                    total,
+                    total_eps,
                     season=season,
                     media=media,
                     thumb_url=thumb,
@@ -266,6 +314,7 @@ class InfoHandler:
                     ep_name=meta.get("name"),
                     ep_plot=meta.get("plot"),
                     ep_aired=meta.get("aired"),
+                    play_episode=play_episode,
                 )
             )
         return items
@@ -281,6 +330,98 @@ class InfoHandler:
             return len(data.get("episodes") or [])
         except Exception:
             return 0
+
+    def _latest_episode(self, media):
+        """Latest AIRED episode number (0 if none/unknown)."""
+        total = int(media.get("episodes") or 0)
+        next_ep = int((media.get("nextAiringEpisode") or {}).get("episode") or 0)
+        latest = (next_ep - 1) if next_ep else total
+        if latest >= 1:
+            return latest
+        return 1 if (total or next_ep) else 0
+
+    def _apply_franchise_totals(self, detail, media, franchise):
+        """Set the headline season/episode counts on the detail item.
+
+        Relocated from the deleted monitor. TotalSeasons MUST equal the franchise
+        group count (the seasons browse view); TotalEpisodes prefers TMDB per-season
+        counts when EVERY group is mapped, else the AniList per-cour sum.
+        """
+        if not franchise:
+            return
+        if any(group.get("_tmdb_split") for group in franchise):
+            # Monolithic long-runner split by TMDB seasons: the cours share one
+            # media, so sum the per-season TMDB counts already on each group (no
+            # extra TMDB calls) rather than _episode_total (the whole show).
+            total_eps = sum(int(group.get("episodes") or 0) for group in franchise)
+            detail.setProperty("TotalSeasons", str(len(franchise)))
+            detail.setProperty("n", str(len(franchise)))
+            if total_eps:
+                detail.setProperty("TotalEpisodes", str(total_eps))
+            return
+        total_eps = sum(
+            self._episode_total(c.get("media") or {})
+            for group in franchise
+            for c in group.get("cours") or []
+        )
+        tmdb_total = 0
+        for group in franchise:
+            if not group.get("tmdb_id") or not group.get("tmdb_season"):
+                tmdb_total = 0
+                break
+            count = self._tmdb_season_count(group)
+            if not count:
+                tmdb_total = 0
+                break
+            tmdb_total += count
+        if tmdb_total:
+            total_eps = tmdb_total
+        detail.setProperty("TotalSeasons", str(len(franchise)))
+        detail.setProperty("n", str(len(franchise)))
+        if total_eps:
+            detail.setProperty("TotalEpisodes", str(total_eps))
+
+    def _season_items(self, media, franchise=None):
+        """Per-season folder items for the More-Episodes list (shared by details/seasons).
+
+        Mirrors the franchise grouping + AniList per-cour episode sum (TMDB count
+        only as a fallback -- Fribb often records the same tmdb_season for every
+        cour, so its per-season count lumps the whole franchise). Each season tile
+        carries year/rating/classification via build_season_item(media=...).
+        """
+        franchise = franchise if franchise is not None else self._franchise(media)
+        if not franchise:
+            li = build_season_item(
+                media["idMal"], _title(media), self._episode_total(media), media=media
+            )
+            return [li] if li else []
+        show_title = franchise_show_title(franchise, _title)
+        items = []
+        for group in franchise:
+            season = group.get("season") or 1
+            cour_media = group.get("media") or media
+            if group.get("_tmdb_split"):
+                # TMDB-split season: every cour points at the same monolithic media,
+                # so summing _episode_total would yield the whole show. The cour's
+                # own `episodes` already holds the TMDB per-season count.
+                season_total = sum(int(c.get("episodes") or 0) for c in group.get("cours") or [])
+            else:
+                season_total = sum(
+                    self._episode_total(c.get("media") or {}) for c in group.get("cours") or []
+                )
+                if not season_total:
+                    season_total = self._tmdb_season_count(group) or self._episode_total(cour_media)
+            li = build_season_item(
+                group.get("mal_id") or cour_media.get("idMal"),
+                show_title,
+                season_total,
+                season=season,
+                label=f"Season {season}",
+                media=cour_media,
+            )
+            if li:
+                items.append(li)
+        return items
 
     def _stream_plan(self, franchise):
         """Per-cour streamingEpisodes plan: (offsets, suppressed).
@@ -337,9 +478,11 @@ class InfoHandler:
                     season=cour.get("season"),
                     show_title=show_title,
                     season_offset=offsets.get(id(cour), 0),
-                    suppress=id(cour) in suppressed,
+                    suppress=(id(cour) in suppressed) or bool(cour.get("_tmdb_split")),
                     tmdb_id=cour.get("tmdb_id"),
                     tmdb_season=cour.get("tmdb_season"),
+                    episode_count=cour.get("_episode_count"),
+                    play_offset=cour.get("_play_offset", 0),
                 )
             )
         return self._finish(items, "episodes")
@@ -349,42 +492,13 @@ class InfoHandler:
         if not media or not media.get("idMal"):
             return self._finish([], "seasons")
         franchise = self._franchise(media)
-        if not franchise:
-            li = build_season_item(
-                media["idMal"],
-                _title(media),
-                self._episode_total(media),
-            )
-            return self._finish([li] if li else [], "seasons", {0})
-        show_title = franchise_show_title(franchise, _title)
-        items = []
-        folders = set()
-        for group in franchise:
-            season = group.get("season") or 1
-            cour_media = group.get("media") or media
-            # The tile total must match the episodes the list will actually show:
-            # sum the AniList per-cour counts (split-cour seasons add their parts).
-            # TMDB's per-season count is only a fallback — Fribb frequently records
-            # the SAME tmdb_season (e.g. 1) for every cour of a multi-season show,
-            # so _tmdb_season_count returns TMDB's lumped franchise total (~85 for
-            # Re:Zero) on EVERY season. The episode list builds from the AniList
-            # per-cour counts, so sourcing the tile from them keeps the two in sync.
-            season_total = sum(
-                self._episode_total(c.get("media") or {}) for c in group.get("cours") or []
-            )
-            if not season_total:
-                season_total = self._tmdb_season_count(group) or self._episode_total(cour_media)
-            li = build_season_item(
-                group.get("mal_id") or cour_media.get("idMal"),
-                show_title,
-                season_total,
-                season=season,
-                label=f"Season {season}",
-                media=cour_media,
-            )
-            items.append(li)
-            folders.add(len(items) - 1)
-        return self._finish(items, "seasons", folders)
+        title = franchise_show_title(franchise, _title) if franchise else _title(media)
+        try:
+            xbmcplugin.setPluginCategory(self.handle, title)
+        except Exception:
+            pass
+        items = self._season_items(media, franchise)
+        return self._finish(items, "seasons", set(range(len(items))))
 
     def episodes(self):
         mal_id = self._mal_id()
@@ -414,9 +528,11 @@ class InfoHandler:
                             season=cour.get("season"),
                             show_title=show_title,
                             season_offset=offsets.get(id(cour), 0),
-                            suppress=id(cour) in suppressed,
+                            suppress=(id(cour) in suppressed) or bool(cour.get("_tmdb_split")),
                             tmdb_id=cour.get("tmdb_id"),
                             tmdb_season=cour.get("tmdb_season"),
+                            episode_count=cour.get("_episode_count"),
+                            play_offset=cour.get("_play_offset", 0),
                         )
                     )
                 return self._finish(items, "episodes")
@@ -577,6 +693,12 @@ class InfoHandler:
                     titles.append(value)
         if title:
             titles.append(title)
+        # wcostream's search matches the bare series name -- "X Season 2" returns
+        # nothing while "X" returns the aggregated page that carries every season.
+        # Append a season-marker-stripped base of each title (AFTER the specific
+        # ones, so a genuinely per-season page like Demon Slayer's arcs is still
+        # found first); the season-aware episode match then pins the right cour.
+        titles.extend(b for b in (_base_series_title(t) for t in list(titles)) if b)
         seen, out = set(), []
         for candidate in titles:
             key = (candidate or "").lower().strip()
@@ -585,7 +707,35 @@ class InfoHandler:
                 out.append(candidate)
         return out
 
-    def _wnt2_episode_url(self, mal_id, media, title, episode):
+    def _wnt2_season_offset(self, mal_id, media):
+        """(wcostream_season, intra_season_episode_offset) for the cour being played.
+
+        wcostream lists every season of a series on one page, so the episode match
+        must know which season the AniList cour is and where it starts. The cour's
+        franchise season is the target season; the offset is the episode count of
+        earlier cours in the SAME season (wcostream numbers a season's cours
+        continuously, so Slime "S2 Part 2 ep1" is wcostream "Season 2 ep13").
+
+        Returns (1, 0) when there's no usable franchise (single-cour show) or for a
+        TMDB-split monolith (its episode is already absolute -- season-aware matching
+        does not apply; the number-only fallback in match_episode handles it).
+        """
+        try:
+            franchise = self._franchise(media)
+        except Exception:
+            franchise = None
+        if not franchise or any(g.get("_tmdb_split") for g in franchise):
+            return 1, 0
+        target = int(mal_id or 0)
+        for group in franchise:
+            running = 0
+            for cour in group.get("cours") or []:
+                if int(cour.get("mal_id") or 0) == target:
+                    return int(group.get("season") or 1), running
+                running += int(cour.get("episodes") or 0)
+        return 1, 0
+
+    def _wnt2_episode_url(self, mal_id, media, title, episode, season=None, offset=None):
         """Resolve the wcostream episode-page URL for an episode, or None."""
         try:
             ep = int(episode)
@@ -594,14 +744,20 @@ class InfoHandler:
         titles = self._search_titles(mal_id, media, title)
         if not titles:
             return None
+        if season is None or offset is None:
+            season, offset = self._wnt2_season_offset(mal_id, media)
         try:
-            url, dbg = wnt2.resolve_episode_url(titles, ep, wnt2.default_base_url())
+            url, dbg = wnt2.resolve_episode_url(
+                titles, ep, wnt2.default_base_url(), season=season, offset=offset
+            )
         except Exception as exc:
             xbmc.log("[8nime] WNT2 resolve failed: %s" % exc, xbmc.LOGWARNING)
             return None
         xbmc.log(
-            "[8nime] WNT2 resolve ep %d: %s (series=%r score=%.2f)"
-            % (ep, "hit" if url else "miss", dbg.get("series"), dbg.get("score", 0.0)),
+            "[8nime] WNT2 resolve ep %d (season=%d offset=%d): %s "
+            "(series=%r score=%.2f episode=%r)"
+            % (ep, season, offset, "hit" if url else "miss", dbg.get("series"),
+               dbg.get("score", 0.0), (dbg.get("episode") or {}).get("name")),
             xbmc.LOGINFO,
         )
         return url
@@ -632,17 +788,19 @@ class InfoHandler:
             li.setInfo("video", {"mediatype": "movie", "title": title})
             return li
 
-        ep_url = self._wnt2_episode_url(mal_id, media, title, episode)
+        # Resolve the cour's franchise season + intra-season offset once: it pins
+        # the right wcostream season for playback AND gives the OSD a correct
+        # SxxExx (our play URL carries no season, so params['season'] is absent).
+        season_n, offset = self._wnt2_season_offset(mal_id, media)
+        ep_url = self._wnt2_episode_url(
+            mal_id, media, title, episode, season=season_n, offset=offset
+        )
         if not ep_url:
             return None
         try:
             ep_n = int(episode)
         except (TypeError, ValueError):
             ep_n = 0
-        try:
-            season_n = int(self.params.get("season") or 1)
-        except (TypeError, ValueError):
-            season_n = 1
         # WNT2's actionResolve copies OSD metadata from the playing ListItem's
         # infolabels, so stamp the real info (a bare item showed a stale "S1:E24").
         ep_label = "{0} - Episode {1}".format(title, ep_n) if ep_n else title

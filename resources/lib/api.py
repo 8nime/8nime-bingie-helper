@@ -83,6 +83,7 @@ MEDIA_FIELDS = """
     genres
     duration
     countryOfOrigin
+    isAdult
     averageScore
     trailer { id site }
 """
@@ -137,6 +138,7 @@ query (
     $includedGenres: [String],
     $year: String,
     $status: MediaStatus,
+    $statusNotIn: [MediaStatus],
     $sort: [MediaSort] = [POPULARITY_DESC, SCORE_DESC]
 ) {
     Page(page: $page, perPage: $perpage) {
@@ -149,7 +151,7 @@ query (
             startDate_like: $year,
             sort: $sort,
             status: $status,
-            status_not_in: [NOT_YET_RELEASED],
+            status_not_in: $statusNotIn,
             isAdult: $isAdult
         ) {
             %s
@@ -241,6 +243,7 @@ query ($idMal: Int, $id: Int, $type: MediaType) {
         genres
         duration
         countryOfOrigin
+        isAdult
         averageScore
         source
         hashtag
@@ -486,6 +489,17 @@ class AniListClient:
         if not _depth_ok(cur_page, per_page):
             return [], False
         query = TRENDING_QUERY if trending else BASE_QUERY
+        if not trending:
+            # A season-scoped browse (this/next-season rows: trakt_popular,
+            # anilist_upcoming, seasonal userlists) MUST include NOT_YET_RELEASED:
+            # early in a season the lineup hasn't aired, and "upcoming" is unreleased
+            # by definition -- excluding it returned 0 items (empty "Airing this
+            # season" / "Upcoming Anime" / "Popular Movies" rows). Only suppress
+            # unreleased for GLOBAL (season-less) browses.
+            # Empty list (NOT null) = "exclude nothing": AniList 500s on
+            # status_not_in: null, but accepts [] and returns the full lineup.
+            variables = dict(variables)
+            variables["statusNotIn"] = [] if variables.get("season") else ["NOT_YET_RELEASED"]
         data = self._post(query, variables)
         if not data:
             return [], False
@@ -720,6 +734,38 @@ class AniListClient:
             )
             deleted = (data or {}).get("DeleteMediaListEntry") or {}
             return bool(deleted.get("deleted")), "reset"
+        if sync_type in ("favorites", "watchlist"):
+            # "Add to Favourites" (561) and the search-panel watchlist toggle both
+            # populate the My List row, which reads the AniList PLANNING list
+            # (watchlist()/_list_entries("PLANNING")). Toggle membership: if the
+            # title is already on the Planning list, remove it; otherwise add it.
+            # Reusing _list_entries means no demote of an already-watching entry —
+            # a CURRENT/COMPLETED title is absent from PLANNING, so it is added,
+            # and only a genuine PLANNING entry is ever deleted here.
+            on_list = any(
+                int((e.get("media") or {}).get("id") or 0) == media_id
+                for e in self._list_entries("PLANNING", ["UPDATED_TIME_DESC"])
+            )
+            if on_list:
+                data = self._post(
+                    """
+                    mutation ($mediaId: Int) {
+                        DeleteMediaListEntry(mediaId: $mediaId) { deleted }
+                    }
+                    """,
+                    {"mediaId": media_id},
+                )
+                deleted = (data or {}).get("DeleteMediaListEntry") or {}
+                return bool(deleted.get("deleted")), "removed"
+            data = self._post(
+                """
+                mutation ($mediaId: Int, $status: MediaListStatus) {
+                    SaveMediaListEntry(mediaId: $mediaId, status: $status) { id status }
+                }
+                """,
+                {"mediaId": media_id, "status": "PLANNING"},
+            )
+            return bool((data or {}).get("SaveMediaListEntry")), "added"
         score_map = {"like": 85.0, "dislike": 25.0}
         score = score_map.get(sync_type)
         if score is None:

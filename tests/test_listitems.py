@@ -35,7 +35,29 @@ from resources.lib.listitems import (
     build_review_item,
     build_video_item,
     build_detail_item,
+    build_spotlight_item,
 )
+import resources.lib.season_map as season_map
+import resources.lib.identity as identity
+
+
+def _reset_season_map(by_anilist=None, tvdb_members=None):
+    season_map._BY_ANILIST = by_anilist or {}
+    season_map._BY_MAL = {}
+    season_map._TVDB_MEMBERS = tvdb_members or {}
+    season_map._LOADED = True
+    season_map._BY_TMDB = None
+    season_map._BY_TMDB_SRC = None
+
+
+@pytest.fixture(autouse=True)
+def _isolate_season_map():
+    # Keep tmdb_id derivation hermetic (no disk cache, unmapped -> surrogate) and
+    # ensure no artwork override leaks in from another test module.
+    _reset_season_map()
+    import resources.lib.art_overrides as _ao
+    _ao._CACHE = {}
+    yield
 
 
 # ---------------------------------------------------------------------------
@@ -295,33 +317,34 @@ class TestBuildItem:
         li = build_item(tv_media)
         assert li._properties["tmdb_type"] == "tv"
 
-    def test_bingie_genre_property(self, tv_media):
+    def test_lean_row_omits_rich_props(self, tv_media):
+        # Lean browse rows carry base fields only; the indexed enrichment props
+        # (Genre.N.Name/Studio/Director/Creator/AniList_Rating) belong to the
+        # spotlight + More-Info header tiers, not browse rows.
         li = build_item(tv_media)
-        assert "Action" in li._properties.get("Genre", "")
+        assert li._properties.get("Genre.1.Name") is None
+        assert li._properties.get("Director") is None
+        assert li._properties.get("Creator") is None
+        assert li._properties.get("AniList_Rating") is None
 
-    def test_bingie_indexed_genre(self, tv_media):
+    def test_genre_infolabel_present_on_lean(self, tv_media):
+        # Base genre stays available via the infolabel for row display.
         li = build_item(tv_media)
-        assert li._properties.get("Genre.1.Name") == "Action"
+        assert "Action" in li._info["video"]["genre"]
 
-    def test_bingie_studio_property(self, tv_media):
+    def test_tmdb_id_surrogate_when_unmapped(self, tv_media):
+        _reset_season_map()
         li = build_item(tv_media)
-        assert "ufotable" in li._properties.get("Studio", "")
+        tmdb_id = int(li._properties["tmdb_id"])
+        assert identity.is_surrogate(tmdb_id)
+        assert identity.decode_surrogate(tmdb_id) == ("anilist", 101922)
+        assert li._unique_ids.get("tmdb") == str(tmdb_id)
 
-    def test_bingie_rating(self, tv_media):
+    def test_tmdb_id_real_when_mapped(self, tv_media):
+        _reset_season_map(by_anilist={"101922": [359556, 1, 85937, 1, None]})
         li = build_item(tv_media)
-        assert li._properties.get("AniList_Rating") == "8.3"
-
-    def test_bingie_status(self, tv_media):
-        li = build_item(tv_media)
-        assert li._properties.get("Status") == "FINISHED"
-
-    def test_bingie_director(self, tv_media):
-        li = build_item(tv_media)
-        assert "Sotozaki" in li._properties.get("Director", "")
-
-    def test_bingie_creator(self, tv_media):
-        li = build_item(tv_media)
-        assert "Gotouge" in li._properties.get("Creator", "")
+        assert li._properties["tmdb_id"] == "85937"
+        assert li._unique_ids.get("tmdb") == "85937"
 
     def test_folderpath_set_for_tv(self, tv_media):
         li = build_item(tv_media)
@@ -348,6 +371,59 @@ class TestBuildItems:
         items = build_items(media_list)
         for li in items:
             assert li.label
+
+
+# ---------------------------------------------------------------------------
+# build_detail_item — the More-Info header tier (full enrichment)
+# ---------------------------------------------------------------------------
+class TestBuildDetailItem:
+    @pytest.fixture
+    def tv_media(self):
+        return load_fixture("anime_detail.json")
+
+    def test_header_carries_indexed_genre(self, tv_media):
+        li = build_detail_item(tv_media)
+        assert li._properties.get("Genre.1.Name") == "Action"
+
+    def test_header_carries_studio(self, tv_media):
+        li = build_detail_item(tv_media)
+        assert "ufotable" in li._properties.get("Studio", "")
+
+    def test_header_carries_rating_and_status(self, tv_media):
+        li = build_detail_item(tv_media)
+        assert li._properties.get("AniList_Rating") == "8.3"
+        assert li._properties.get("Status") == "FINISHED"
+
+    def test_header_carries_director_and_creator(self, tv_media):
+        li = build_detail_item(tv_media)
+        assert "Sotozaki" in li._properties.get("Director", "")
+        assert "Gotouge" in li._properties.get("Creator", "")
+
+
+# ---------------------------------------------------------------------------
+# build_spotlight_item — the rich hero tier (enrichment + G11 ratings)
+# ---------------------------------------------------------------------------
+class TestBuildSpotlightItem:
+    @pytest.fixture
+    def tv_media(self):
+        return load_fixture("anime_detail.json")
+
+    def test_spotlight_carries_indexed_props(self, tv_media):
+        li = build_spotlight_item(tv_media)
+        assert li._properties.get("Genre.1.Name") == "Action"
+        assert li._properties.get("AniList_Rating") == "8.3"
+
+    def test_spotlight_sets_imdb_trakt_ratings_for_cast_thumb(self, tv_media):
+        # G11: the hero cast-thumb/rating UI is gated on a rating being present;
+        # mirror the AniList score into the IMDb/Trakt slots so it shows.
+        li = build_spotlight_item(tv_media)
+        assert li._properties.get("IMDb_Rating") == "8.3"
+        assert li._properties.get("Trakt_Rating") == "8.3"
+
+    def test_spotlight_omits_relations_summary(self, tv_media):
+        # The relations summary is a detailed/header-only property.
+        li = build_spotlight_item(tv_media)
+        assert li._properties.get("relations") is None
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +547,20 @@ class TestBuildSeasonItem:
         li = build_season_item(40748, "Demon Slayer", 7)
         assert "episodes" in li._path
         assert "mal_id=40748" in li._path
+
+    def test_season_carries_year_rating_classification(self):
+        media = {"startDate": {"year": 2021}, "averageScore": 83, "format": "TV", "isAdult": False}
+        li = build_season_item(40748, "Demon Slayer", 7, season=1, media=media)
+        info = li._info["video"]
+        assert info["year"] == 2021
+        assert abs(info["rating"] - 8.3) < 0.01
+        assert info["mpaa"] == "PG-13"
+        assert li._properties.get("AniList_Rating") == "8.3"
+
+    def test_season_adult_classification(self):
+        media = {"isAdult": True, "format": "TV"}
+        li = build_season_item(40748, "X", 12, media=media)
+        assert li._info["video"]["mpaa"] == "R18+"
 
 
 # ---------------------------------------------------------------------------

@@ -85,10 +85,26 @@ class TestBuildCompact:
         result = season_map.build_compact(data)
         assert "999" not in result["by_anilist"]
 
-    def test_entry_without_season_skipped(self):
-        data = [{"tvdb_id": 12345, "anilist_id": 999, "mal_id": 999, "type": "TV", "season": {}}]
+    def test_entry_without_season_recorded_for_id_lookup_only(self):
+        # A no-season entry (1:1 with the whole TVDB series, e.g. One Piece) is now
+        # recorded in by_anilist/by_mal so tmdb_lookup resolves its real TMDB id
+        # (enabling the TMDB season-split), with the season axis defaulted to 1 --
+        # but it is NOT added as a tvdb member (that would pollute a shared-tvdb
+        # franchise).
+        data = [
+            {
+                "tvdb_id": 12345,
+                "anilist_id": 999,
+                "mal_id": 999,
+                "type": "TV",
+                "season": {},
+                "themoviedb_id": {"tv": 555},
+            }
+        ]
         result = season_map.build_compact(data)
-        assert "999" not in result["by_anilist"]
+        assert result["by_anilist"]["999"] == [12345, 1, 555, None, None]
+        assert result["by_mal"]["999"] == [12345, 1, 555, None, None]
+        assert "12345" not in result["tvdb_members"]
 
     def test_non_tv_type_marked_is_tv_false(self):
         data = [
@@ -295,3 +311,50 @@ class TestAvailable:
     def test_available_true_when_data_present(self):
         _inject(tvdb_members={"76669": [[16498, 16498, 1, 1, None, None]]})
         assert season_map.available() is True
+
+
+# ---------------------------------------------------------------------------
+# members_for_tmdb — reverse index tmdb_id -> [member dicts]
+# ---------------------------------------------------------------------------
+class TestMembersForTmdb:
+    def setup_method(self):
+        _reset()
+
+    def test_reverse_lookup_single(self):
+        _inject(tvdb_members={"76669": [[16498, 16498, 1, 1, 12345, 1]]})
+        ms = season_map.members_for_tmdb(12345)
+        assert len(ms) == 1
+        assert ms[0]["anilist"] == 16498
+        assert ms[0]["tmdb_season"] == 1
+
+    def test_reverse_lookup_groups_all_cours(self):
+        _inject(tvdb_members={"76669": [
+            [16498, 16498, 1, 1, 12345, 1],
+            [20958, 20958, 2, 1, 12345, 2],
+        ]})
+        ms = season_map.members_for_tmdb(12345)
+        assert {m["season"] for m in ms} == {1, 2}
+
+    def test_reverse_lookup_spans_multiple_tvdb_series(self):
+        # Same tmdb id can appear under different tvdb series records.
+        _inject(tvdb_members={
+            "76669": [[16498, 16498, 1, 1, 12345, 1]],
+            "88888": [[20958, 20958, 1, 1, 12345, 2]],
+        })
+        ms = season_map.members_for_tmdb(12345)
+        assert len(ms) == 2
+
+    def test_reverse_lookup_ignores_unmapped(self):
+        _inject(tvdb_members={"76669": [[16498, 16498, 1, 1, None, None]]})
+        assert season_map.members_for_tmdb(12345) == []
+
+    def test_reverse_lookup_unknown_returns_empty(self):
+        _inject(tvdb_members={})
+        assert season_map.members_for_tmdb(99999) == []
+
+    def test_reverse_index_rebuilds_after_reinject(self):
+        _inject(tvdb_members={"76669": [[16498, 16498, 1, 1, 12345, 1]]})
+        assert len(season_map.members_for_tmdb(12345)) == 1
+        _inject(tvdb_members={"76669": [[1, 1, 1, 1, 999, 1], [2, 2, 2, 1, 999, 2]]})
+        assert season_map.members_for_tmdb(12345) == []
+        assert len(season_map.members_for_tmdb(999)) == 2
