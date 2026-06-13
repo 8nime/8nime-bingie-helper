@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import sys
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import xbmc
 import xbmcaddon
@@ -201,6 +202,51 @@ def refresh_details(args):
         _busy_close()
 
 
+def _merge_query(url, updates):
+    """Return url with its query params updated. A None value removes a param.
+
+    Always resets `page` so a new search/sort starts at page 1.
+    """
+    parts = urlsplit(url)
+    params = dict(parse_qsl(parts.query, keep_blank_values=False))
+    params.pop("page", None)
+    for key, value in updates.items():
+        if value:
+            params[key] = value
+        else:
+            params.pop(key, None)
+    return urlunsplit(parts._replace(query=urlencode(params)))
+
+
+def category_filter(args):
+    """Side-blade Search: prompt for text, re-query AniList scoped to this view."""
+    path = (args.get("path") or "").replace('"', "")
+    if not path:
+        return
+    current = dict(parse_qsl(urlsplit(path).query)).get("search", "")
+    query = xbmcgui.Dialog().input(
+        "Search this category", defaultt=current, type=xbmcgui.INPUT_ALPHANUM
+    )
+    if query is None:
+        return
+    target = _merge_query(path, {"search": query.strip()})
+    xbmc.executebuiltin(f'Container.Update({target})')
+
+
+def category_sort(args):
+    """Side-blade Sort: pick an AniList sort, re-query this view."""
+    path = (args.get("path") or "").replace('"', "")
+    if not path:
+        return
+    labels = ["Title (A-Z)", "Most popular", "Highest score", "Newest", "Trending"]
+    keys = ["title", "popularity", "score", "newest", "trending"]
+    idx = xbmcgui.Dialog().select("Sort by", labels)
+    if idx < 0:
+        return
+    target = _merge_query(path, {"sort": keys[idx]})
+    xbmc.executebuiltin(f'Container.Update({target})')
+
+
 def main():
     raw = sys.argv[1:]
     args = dict(arg.split("=", 1) for arg in raw if "=" in arg)
@@ -236,6 +282,12 @@ def main():
         return
     if args.get("clear_expired_cache") == "true":
         clear_cache(expired_only=True)
+        return
+    if args.get("action") == "catfilter":
+        category_filter(args)
+        return
+    if args.get("action") == "catsort":
+        category_sort(args)
         return
     if args.get("anilist_login") == "true":
         from resources.lib import anilist_login

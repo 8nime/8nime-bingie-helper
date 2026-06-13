@@ -6,6 +6,27 @@ import resources.lib.identity as identity
 import default as default_mod
 
 
+class TestMergeQuery:
+    def test_sets_param_and_resets_page(self):
+        url = "plugin://plugin.video.8nime.bingie.helper/?info=dir_tv&page=4"
+        out = default_mod._merge_query(url, {"search": "naruto"})
+        assert "info=dir_tv" in out
+        assert "search=naruto" in out
+        assert "page=" not in out  # page reset
+
+    def test_empty_value_removes_param(self):
+        url = "plugin://plugin.video.8nime.bingie.helper/?info=dir_tv&search=old"
+        out = default_mod._merge_query(url, {"search": ""})
+        assert "search" not in out
+        assert "info=dir_tv" in out
+
+    def test_preserves_other_params(self):
+        url = "plugin://plugin.video.8nime.bingie.helper/?info=dir_tv&search=x"
+        out = default_mod._merge_query(url, {"sort": "score"})
+        assert "search=x" in out
+        assert "sort=score" in out
+
+
 class TestMainDispatch:
     def test_positional_sync_trakt_dispatches(self, monkeypatch):
         # G1: sync_trakt is a bare positional token; it must still reach the handler

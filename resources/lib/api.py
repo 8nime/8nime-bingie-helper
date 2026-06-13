@@ -137,6 +137,7 @@ query (
     $season: MediaSeason,
     $includedGenres: [String],
     $year: String,
+    $search: String,
     $status: MediaStatus,
     $statusNotIn: [MediaStatus],
     $sort: [MediaSort] = [POPULARITY_DESC, SCORE_DESC]
@@ -149,6 +150,7 @@ query (
             genre_in: $includedGenres,
             season: $season,
             startDate_like: $year,
+            search: $search,
             sort: $sort,
             status: $status,
             status_not_in: $statusNotIn,

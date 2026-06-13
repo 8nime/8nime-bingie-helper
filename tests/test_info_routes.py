@@ -222,6 +222,39 @@ class TestTmdbSplitEpisodes:
         assert "episode=77" in captured[-1][1].getPath()  # offset 61 + local 16
 
 
+class TestUpcomingEntry:
+    """A not-yet-aired entry (e.g. Mushoku Tensei S3, premieres 2026-07-06) has no
+    aired episodes -- show a non-playable 'Premieres <date>' row, not a blank list."""
+
+    def test_not_yet_released_shows_premiere_placeholder(self, monkeypatch, captured):
+        media = {
+            "idMal": 59193, "id": 178789, "format": "TV",
+            "status": "NOT_YET_RELEASED", "episodes": None,
+            "startDate": {"year": 2026, "month": 7, "day": 6},
+            "title": {"romaji": "Mushoku Tensei III"},
+            "nextAiringEpisode": {"episode": 1},
+        }
+        h = InfoHandler(1, {"info": "episodes", "mal_id": "59193"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: None)
+        h.episodes()
+        assert len(captured) == 1
+        li = captured[0][1]
+        assert li.label == "Premieres Jul 6, 2026"
+        assert li.getProperty("IsPlayable") == "false"
+
+    def test_aired_show_lists_episodes_not_placeholder(self, monkeypatch, captured):
+        media = _media()  # RELEASING-style, 7 aired (nextAiringEpisode 8)
+        media["status"] = "RELEASING"
+        h = InfoHandler(1, {"info": "episodes", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: None)
+        monkeypatch.setattr("resources.lib.tmdb.episode_stills", lambda *a, **k: {})
+        h.episodes()
+        assert len(captured) == 7
+        assert all("Premieres" not in c[1].label for c in captured)
+
+
 class TestSortOrder:
     """The `sort_order` setting flips the display order of the seasons list and the
     episode lists; default is newest-first (desc)."""

@@ -297,7 +297,8 @@ class InfoHandler:
     def _build_episode_list(
         self, media, mal_id=None, season=1, show_title=None, season_offset=0,
         suppress=False, tmdb_id=None, tmdb_season=None,
-        episode_count=None, play_offset=0, tmdb_offset=0,
+        episode_count=None, play_offset=0, tmdb_offset=0, display_offset=0,
+        season_total=None,
     ):
         mal_id = mal_id or media.get("idMal")
         if not mal_id or not media:
@@ -356,6 +357,8 @@ class InfoHandler:
 
         is_split = episode_count is not None
         total_eps = int(episode_count) if is_split else total
+        if not is_split and season_total:
+            total_eps = int(season_total)
         items = []
         for ep in range(1, last + 1):
             if is_split:
@@ -371,10 +374,16 @@ class InfoHandler:
             # Display the season-local number (ep); for a TMDB-split season PLAY the
             # absolute AniList episode (offset + local) the search/Otaku backends key on.
             play_episode = (int(play_offset) + ep) if is_split else ep
+            # Continuous display number across the cours that aggregate into one
+            # season (AoT S4 = Part1 1..16 then Part2 17..28) so the episodes view --
+            # which force-sorts by number -- doesn't interleave two cours that each
+            # restart at 1. play_episode stays cour-local so playback still resolves
+            # the right backend episode; split arcs keep their season-local display.
+            display_ep = ep if is_split else (int(display_offset) + ep)
             items.append(
                 build_episode_item(
                     mal_id,
-                    ep,
+                    display_ep,
                     title,
                     total_eps,
                     season=season,
@@ -388,6 +397,35 @@ class InfoHandler:
                 )
             )
         return items
+
+    def _upcoming_item(self, media):
+        """A single non-playable 'Premieres <date>' row for a not-yet-aired entry.
+
+        A NOT_YET_RELEASED season/show has no aired episodes, so its episode list
+        comes up empty -- which reads as broken (e.g. Mushoku Tensei S3, premieres
+        2026-07-06). Surface a clear upcoming row instead of a blank list. Returns
+        None for anything that has aired (the real episode list is used then).
+        """
+        if (media.get("status") or "").upper() != "NOT_YET_RELEASED":
+            return None
+        months = ("", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+        start = media.get("startDate") or {}
+        year = start.get("year")
+        month = start.get("month") or 0
+        day = start.get("day") or 0
+        if year and 1 <= month <= 12 and day:
+            when = "%s %d, %d" % (months[month], day, year)
+        elif year:
+            when = str(year)
+        else:
+            when = ""
+        label = ("Premieres %s" % when) if when else "Not yet aired"
+        li = xbmcgui.ListItem(label=label)
+        li.setInfo("video", {"title": label, "mediatype": "episode"})
+        li.setProperty("IsPlayable", "false")
+        li.setProperty("SpecialSort", "top")
+        return li
 
     def _tmdb_season_count(self, group):
         """TMDB episode count for a season group, or 0 when unmapped/unavailable."""
@@ -610,30 +648,49 @@ class InfoHandler:
                 show_title = franchise_show_title(franchise, _title)
                 offsets, suppressed = self._stream_plan(franchise)
                 tmdb_offsets = self._tmdb_offsets(franchise)
+                cours = group.get("cours") or []
+                # When several cours aggregate into one season (split cours, e.g.
+                # AoT S4 = Final Season Part 1 + Part 2), each cour keeps its own
+                # mal_id + cour-local play numbering so playback resolves correctly,
+                # but the DISPLAY number must run continuously across them (1..16
+                # then 17..28) -- otherwise both cours restart at 1 and the
+                # force-sorted episodes view interleaves them. season_total makes
+                # the "of N" reflect the whole season.
+                season_total = sum(
+                    self._episode_total(c.get("media") or {}) for c in cours
+                ) or None
                 items = []
-                # A season may aggregate several cours (split cours). Each cour
-                # keeps its own mal_id + local 1..N numbering so playback resolves
-                # correctly; season_offset indexes the season's streamingEpisodes
-                # listing, tmdb_offset the (possibly franchise-wide) TMDB season.
-                for cour in group.get("cours") or []:
+                display_offset = 0
+                for cour in cours:
                     cour_media = cour.get("media") or media
-                    items.extend(
-                        self._build_episode_list(
-                            cour_media,
-                            mal_id=cour.get("mal_id") or cour_media.get("idMal"),
-                            season=cour.get("season"),
-                            show_title=show_title,
-                            season_offset=offsets.get(id(cour), 0),
-                            suppress=(id(cour) in suppressed) or bool(cour.get("_tmdb_split")),
-                            tmdb_id=cour.get("tmdb_id"),
-                            tmdb_season=cour.get("tmdb_season"),
-                            episode_count=cour.get("_episode_count"),
-                            play_offset=cour.get("_play_offset", 0),
-                            tmdb_offset=tmdb_offsets.get(id(cour), 0),
-                        )
+                    cour_items = self._build_episode_list(
+                        cour_media,
+                        mal_id=cour.get("mal_id") or cour_media.get("idMal"),
+                        season=cour.get("season"),
+                        show_title=show_title,
+                        season_offset=offsets.get(id(cour), 0),
+                        suppress=(id(cour) in suppressed) or bool(cour.get("_tmdb_split")),
+                        tmdb_id=cour.get("tmdb_id"),
+                        tmdb_season=cour.get("tmdb_season"),
+                        episode_count=cour.get("_episode_count"),
+                        play_offset=cour.get("_play_offset", 0),
+                        tmdb_offset=tmdb_offsets.get(id(cour), 0),
+                        display_offset=display_offset,
+                        season_total=season_total,
                     )
+                    items.extend(cour_items)
+                    display_offset += len(cour_items)
+                if not items:
+                    season_media = (cours[0].get("media") if cours else None) or media
+                    placeholder = self._upcoming_item(season_media)
+                    if placeholder:
+                        items = [placeholder]
                 return self._finish(_ordered(items), "episodes")
         items = self._build_episode_list(media, mal_id)
+        if not items:
+            placeholder = self._upcoming_item(media)
+            if placeholder:
+                items = [placeholder]
         return self._finish(_ordered(items), "episodes")
 
     def collection(self):

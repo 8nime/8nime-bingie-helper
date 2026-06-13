@@ -15,7 +15,7 @@ from resources.lib.api import (
 from resources.lib.constants import ADDON_ID, PLUGIN_URL
 from resources.lib.info_routes import InfoHandler
 from resources.lib.listitems import build_item, build_items, build_spotlight_item
-from resources.lib.titles import title_for_media
+from resources.lib.titles import title_for_media, title_sort
 
 ADDON = xbmcaddon.Addon()
 
@@ -91,10 +91,10 @@ TMDB_GENRE_MAP = {
     "10768": "Mecha",
 }
 
-# AniList caps perPage at 50; category/full-window browses show this many by
-# merging consecutive AniList pages (CATEGORY_VIEW_SIZE / 50 fetches per page).
+# AniList caps perPage at 50. _browse can still assemble a larger view by
+# merging consecutive AniList pages (view_size > 50), but every current browse
+# uses a single 50-item page so next-page stays a single fast round trip.
 _ANILIST_PER_PAGE = 50
-CATEGORY_VIEW_SIZE = 100
 
 INFO_ROUTES = {
     "details": "details",
@@ -201,6 +201,33 @@ class RouteHandler:
             season, year = current_season_year()
         return season, f"{year}%"
 
+    def _directory_entries(self, items):
+        """Build (path, listitem, isFolder) tuples for addDirectoryItems.
+
+        Widgets keep the legacy form (isFolder=False, path = the bare base url):
+        the skin's home/spotlight onclicks drive navigation and playback by
+        reading each item's folderpath/filenameandpath PROPERTIES, not Kodi's
+        folder flag, so the path itself is never followed.
+
+        In a real browsable window (the All Series / Specials / All Movies
+        category browses, search, My List) there is no custom onclick, so Kodi's
+        default click behaviour has to work on its own: movies are playable
+        leaves (path = the info=play url) and shows are folders that navigate
+        into their seasons (path = the info=seasons url kept in folderpath).
+        Without this a clicked show tried to *play* the bare base url and did
+        nothing.
+        """
+        if self.is_widget:
+            return [(li.getPath(), li, False) for li in items]
+        entries = []
+        for li in items:
+            if li.getProperty("IsPlayable") == "true":
+                entries.append((li.getPath(), li, False))
+                continue
+            nav = li.getProperty("folderpath") or li.getPath()
+            entries.append((nav, li, nav != PLUGIN_URL))
+        return entries
+
     def _browse(self, variables, trending=False, content="videos", view_size=None):
         # AniList hard-caps perPage at 50, so a larger displayed page (e.g. 100 for
         # category browses) is assembled by merging consecutive AniList pages. With
@@ -223,13 +250,16 @@ class RouteHandler:
 
         items = build_items(media)
         if items:
-            xbmcplugin.addDirectoryItems(self.handle, [(li.getPath(), li, False) for li in items])
+            xbmcplugin.addDirectoryItems(self.handle, self._directory_entries(items))
 
         if has_next and self._should_paginate():
             self._add_next_page()
 
         xbmcplugin.setContent(self.handle, content)
-        xbmcplugin.endOfDirectory(self.handle)
+        # cacheToDisc=False: Kodi otherwise disc-caches each page, which made
+        # paging forward (and re-entering a browse) occasionally serve a stale or
+        # empty listing -- the "next page gets stuck" symptom.
+        xbmcplugin.endOfDirectory(self.handle, cacheToDisc=False)
         return True
 
     def _add_next_page(self):
@@ -277,7 +307,7 @@ class RouteHandler:
         media, has_next = self.client.watchlist(page=self._page(), per_page=self._limit())
         items = build_items(media)
         if items:
-            xbmcplugin.addDirectoryItems(self.handle, [(li.getPath(), li, False) for li in items])
+            xbmcplugin.addDirectoryItems(self.handle, self._directory_entries(items))
         if has_next and self._should_paginate():
             self._add_next_page()
         xbmcplugin.setContent(self.handle, "videos")
@@ -305,7 +335,7 @@ class RouteHandler:
         media = self.client.next_up()
         items = build_items(media)
         if items:
-            xbmcplugin.addDirectoryItems(self.handle, [(li.getPath(), li, False) for li in items])
+            xbmcplugin.addDirectoryItems(self.handle, self._directory_entries(items))
         xbmcplugin.setContent(self.handle, "videos")
         xbmcplugin.endOfDirectory(self.handle)
         return True
@@ -384,7 +414,7 @@ class RouteHandler:
         )
         items = build_items(media)
         if items:
-            xbmcplugin.addDirectoryItems(self.handle, [(li.getPath(), li, False) for li in items])
+            xbmcplugin.addDirectoryItems(self.handle, self._directory_entries(items))
         if has_next and self._should_paginate():
             self._add_next_page()
         xbmcplugin.setContent(self.handle, "videos")
@@ -426,21 +456,56 @@ class RouteHandler:
         xbmcplugin.endOfDirectory(self.handle, succeeded=True)
         return True
 
+    # Sort keys the side-blade Sort selector passes (&sort=); mapped to AniList
+    # MediaSort. "title" -> the display-language title sort (see title_sort).
+    _SORT_ENUMS = {
+        "popularity": "POPULARITY_DESC",
+        "score": "SCORE_DESC",
+        "newest": "START_DATE_DESC",
+        "trending": "TRENDING_DESC",
+    }
+
+    def _browse_sort(self, has_search=False):
+        """AniList sort for a category browse, honouring an explicit &sort=.
+
+        Default is alphabetical (A->Z catalogue). A free-text search with no
+        explicit sort ranks by relevance (SEARCH_MATCH) instead of A->Z.
+        """
+        key = self.params.get("sort", "")
+        if key == "title":
+            return [title_sort()]
+        enum = self._SORT_ENUMS.get(key)
+        if enum:
+            return [enum]
+        if has_search:
+            return ["SEARCH_MATCH", "POPULARITY_DESC"]
+        return [title_sort()]
+
     def dir_all(self):
         info = self.params.get("info", "dir_tv")
         tmdb_type = "movie" if info == "dir_movie" else "tv"
         variables = self._media_vars(tmdb_type)
-        variables["sort"] = ["POPULARITY_DESC", "SCORE_DESC"]
-        return self._browse(variables, trending=False, view_size=CATEGORY_VIEW_SIZE)
+        # A->Z catalogue by default; the side-blade Search/Sort drawer can pass
+        # &search= (server-side AniList title search, scoped to this type/format)
+        # and &sort= (POPULARITY/SCORE/newest/trending/title). One AniList page
+        # per view (50) keeps next-page fast.
+        search = self.params.get("search", "").strip()
+        variables["sort"] = self._browse_sort(has_search=bool(search))
+        if search:
+            variables["search"] = search
+        return self._browse(variables, trending=False)
 
     def dir_ova(self):
         """AniList OVA / ONA / Special browse (replaces the old Otaku OVA link)."""
+        search = self.params.get("search", "").strip()
         variables = {
             "type": "ANIME",
             "format": ["OVA", "ONA", "SPECIAL"],
-            "sort": ["POPULARITY_DESC", "SCORE_DESC"],
+            "sort": self._browse_sort(has_search=bool(search)),
         }
-        return self._browse(variables, trending=False, view_size=CATEGORY_VIEW_SIZE)
+        if search:
+            variables["search"] = search
+        return self._browse(variables, trending=False)
 
     def dir_stub(self, info):
         label = info.replace("dir_", "").replace("_", " ").title()

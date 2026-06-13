@@ -21,6 +21,17 @@ def _best_english_synonym(synonyms):
     return max(candidates, key=len)
 
 
+def title_sort():
+    """AniList MediaSort that matches the configured display title language.
+
+    A name-sorted catalogue browse should read A->Z in the SAME titles the list
+    shows, so map the helper's title_language setting onto AniList's verified
+    MediaSort enum (TITLE_ROMAJI / TITLE_ENGLISH, both ascending by default).
+    """
+    preferred = ADDON.getSetting("title_language") or "english"
+    return "TITLE_ROMAJI" if preferred == "romaji" else "TITLE_ENGLISH"
+
+
 def title_for_media(media):
     titles = media.get("title") or {}
     preferred = ADDON.getSetting("title_language") or "english"
