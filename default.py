@@ -130,10 +130,23 @@ def sync_trakt_rating(args):
         if ok:
             # Bust the AniList cache so My List (cached MediaListCollection) and the
             # detail dialog's on-list/rating state (OnMyList/MyRating) reflect this
-            # change immediately. No success toast: the favourite button's label/icon
-            # flip ("Add To Favorite" + plus <-> "Remove From Favorite" + minus) via
-            # the OnMyList property the refreshed detail item carries is the feedback.
-            _refresh_views()
+            # change. No success toast: the favourite button's label/icon flip
+            # ("Add To Favorite" + plus <-> "Remove From Favorite" + minus) via the
+            # OnMyList/MyRating the refreshed detail item carries is the feedback.
+            clear_all_caches(expired_only=False)
+            # Pre-warm the caches the refreshed detail + My List widget will read,
+            # WHILE the spinner is still up, so their re-query is an instant cache
+            # hit and the view updates before the spinner closes -- not after.
+            try:
+                media = client.get_media(int(mal_id))
+                if media and media.get("id"):
+                    client.list_state(media["id"])
+                client.watchlist()
+            except Exception:
+                pass
+            bump_widget_reload()
+            xbmc.executebuiltin("Container.Refresh")
+            xbmc.sleep(_REFRESH_SETTLE_MS)
     finally:
         _busy_close()
     if not ok:
