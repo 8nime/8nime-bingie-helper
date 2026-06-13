@@ -5,9 +5,16 @@
       <group id="1" label="">
         <setting id="anilist_login" type="action" label="32050" help="32051">
           <level>0</level>
-          <data>RunPlugin(plugin://plugin.video.otaku/watchlist_login/anilist?auth_dialog=true)</data>
+          <data>RunScript(plugin.video.8nime.bingie.helper,anilist_login=true)</data>
           <control type="button" format="action">
             <heading>32050</heading>
+          </control>
+        </setting>
+        <setting id="anilist_logout" type="action" label="32052" help="32053">
+          <level>0</level>
+          <data>RunScript(plugin.video.8nime.bingie.helper,anilist_logout=true)</data>
+          <control type="button" format="action">
+            <heading>32052</heading>
           </control>
         </setting>
       </group>

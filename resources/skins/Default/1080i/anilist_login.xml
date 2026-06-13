@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<window type="dialog">
+    <defaultcontrol always="true">1001</defaultcontrol>
+    <controls>
+        <!-- Full-screen opaque black background (white.png is always available) -->
+        <control type="image">
+            <left>0</left>
+            <top>0</top>
+            <width>1920</width>
+            <height>1080</height>
+            <texture colordiffuse="FF000000">white.png</texture>
+        </control>
+
+        <!-- Title -->
+        <control type="label">
+            <left>0</left>
+            <top>64</top>
+            <width>1920</width>
+            <height>72</height>
+            <font>Bold40</font>
+            <align>center</align>
+            <textcolor>FFFFFFFF</textcolor>
+            <label>Log in with AniList</label>
+        </control>
+
+        <!-- QR code (centered) -->
+        <control type="image">
+            <left>710</left>
+            <top>160</top>
+            <width>500</width>
+            <height>500</height>
+            <aspectratio>keep</aspectratio>
+            <texture>$INFO[Window().Property(qr_code)]</texture>
+        </control>
+
+        <!-- Instructions -->
+        <control type="label">
+            <left>360</left>
+            <top>686</top>
+            <width>1200</width>
+            <height>44</height>
+            <font>Reg26</font>
+            <align>center</align>
+            <textcolor>FFFFFFFF</textcolor>
+            <label>Scan the QR with your phone, sign in to AniList, copy your token, then paste it below.</label>
+        </control>
+        <control type="label">
+            <left>360</left>
+            <top>732</top>
+            <width>1200</width>
+            <height>40</height>
+            <font>Reg22</font>
+            <align>center</align>
+            <textcolor>AAFFFFFF</textcolor>
+            <label>$INFO[Window().Property(armkai_url)]</label>
+        </control>
+
+        <!-- Token field -->
+        <control type="edit" id="1001">
+            <left>560</left>
+            <top>800</top>
+            <width>800</width>
+            <height>72</height>
+            <texturefocus colordiffuse="66FFFFFF" border="2">white.png</texturefocus>
+            <texturenofocus colordiffuse="22FFFFFF" border="2">white.png</texturenofocus>
+            <font>Reg26</font>
+            <textcolor>FFFFFFFF</textcolor>
+            <label>Token</label>
+            <hinttext>Paste your AniList token</hinttext>
+            <pulseonselect>no</pulseonselect>
+        </control>
+
+        <!-- Buttons -->
+        <control type="grouplist" id="2000">
+            <left>660</left>
+            <top>900</top>
+            <width>600</width>
+            <height>76</height>
+            <orientation>horizontal</orientation>
+            <itemgap>40</itemgap>
+            <align>center</align>
+            <control type="button" id="1002">
+                <width>280</width>
+                <height>72</height>
+                <texturefocus colordiffuse="FF3DB39E" border="2">white.png</texturefocus>
+                <texturenofocus colordiffuse="40FFFFFF" border="2">white.png</texturenofocus>
+                <font>Bold28</font>
+                <align>center</align>
+                <textcolor>FFFFFFFF</textcolor>
+                <focusedcolor>FF000000</focusedcolor>
+                <label>Save token</label>
+            </control>
+            <control type="button" id="1003">
+                <width>280</width>
+                <height>72</height>
+                <texturefocus colordiffuse="FFB3433D" border="2">white.png</texturefocus>
+                <texturenofocus colordiffuse="40FFFFFF" border="2">white.png</texturenofocus>
+                <font>Bold28</font>
+                <align>center</align>
+                <textcolor>FFFFFFFF</textcolor>
+                <label>Cancel</label>
+            </control>
+        </control>
+    </controls>
+</window>

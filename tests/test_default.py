@@ -117,3 +117,32 @@ class TestG6Handlers:
         monkeypatch.setattr(sys, "argv", ["default.py", "refresh_details", "tmdb_id=85937"])
         default_mod.main()
         assert called.get("hit")
+
+
+class TestAniListLoginDispatch:
+    def test_login_action_runs_and_reloads(self, monkeypatch):
+        from resources.lib import anilist_login
+        flags = {}
+        monkeypatch.setattr(anilist_login, "prompt_login", lambda: flags.setdefault("login", True) or True)
+        monkeypatch.setattr(default_mod, "bump_widget_reload", lambda: flags.setdefault("reload", True))
+        monkeypatch.setattr(sys, "argv", ["default.py", "anilist_login=true"])
+        default_mod.main()
+        assert flags.get("login") and flags.get("reload")
+
+    def test_login_no_reload_when_login_fails(self, monkeypatch):
+        from resources.lib import anilist_login
+        flags = {}
+        monkeypatch.setattr(anilist_login, "prompt_login", lambda: False)
+        monkeypatch.setattr(default_mod, "bump_widget_reload", lambda: flags.setdefault("reload", True))
+        monkeypatch.setattr(sys, "argv", ["default.py", "anilist_login=true"])
+        default_mod.main()
+        assert "reload" not in flags
+
+    def test_logout_action_runs_and_reloads(self, monkeypatch):
+        from resources.lib import anilist_login
+        flags = {}
+        monkeypatch.setattr(anilist_login, "logout", lambda: flags.setdefault("logout", True) or True)
+        monkeypatch.setattr(default_mod, "bump_widget_reload", lambda: flags.setdefault("reload", True))
+        monkeypatch.setattr(sys, "argv", ["default.py", "anilist_logout=true"])
+        default_mod.main()
+        assert flags.get("logout") and flags.get("reload")

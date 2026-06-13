@@ -267,8 +267,12 @@ class RouteHandler:
     def trakt_favorites(self):
         from resources.lib.auth import has_anilist_token
 
+        # My List reflects the AniList PLANNING list, which a favourite toggle
+        # mutates moments earlier. cacheToDisc=False stops Kodi serving a stale
+        # (e.g. empty, pre-login) listing after the list changes -- the widget's
+        # reload= param already busts it, this covers a full-window browse too.
         if not has_anilist_token():
-            xbmcplugin.endOfDirectory(self.handle, succeeded=True)
+            xbmcplugin.endOfDirectory(self.handle, succeeded=True, cacheToDisc=False)
             return True
         media, has_next = self.client.watchlist(page=self._page(), per_page=self._limit())
         items = build_items(media)
@@ -277,7 +281,7 @@ class RouteHandler:
         if has_next and self._should_paginate():
             self._add_next_page()
         xbmcplugin.setContent(self.handle, "videos")
-        xbmcplugin.endOfDirectory(self.handle)
+        xbmcplugin.endOfDirectory(self.handle, cacheToDisc=False)
         return True
 
     def trakt_userlist(self):

@@ -13,12 +13,20 @@ msgid "Account"
 msgstr "Account"
 
 msgctxt "#32050"
-msgid "Log in with AniList (Otaku)"
-msgstr "Log in with AniList (Otaku)"
+msgid "Log in with AniList"
+msgstr "Log in with AniList"
 
 msgctxt "#32051"
-msgid "Opens Otaku account login. Bingie widgets reuse that AniList session automatically."
-msgstr "Opens Otaku account login. Bingie widgets reuse that AniList session automatically."
+msgid "Scan a QR code to sign in to AniList. The session is shared with Otaku when it is installed."
+msgstr "Scan a QR code to sign in to AniList. The session is shared with Otaku when it is installed."
+
+msgctxt "#32052"
+msgid "Log out of AniList"
+msgstr "Log out of AniList"
+
+msgctxt "#32053"
+msgid "Clears the saved AniList token (also from Otaku when it is installed)."
+msgstr "Clears the saved AniList token (also from Otaku when it is installed)."
 
 msgctxt "#32020"
 msgid "Display"

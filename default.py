@@ -66,15 +66,39 @@ def clear_cache(expired_only=False):
     xbmc.executebuiltin("Container.Refresh")
 
 
+# How long to hold the busy spinner after Container.Refresh so it doesn't vanish
+# before the (async) detail/widget re-query lands and the view visibly updates.
+_REFRESH_SETTLE_MS = 900
+
+
+def _busy_open():
+    xbmc.executebuiltin("ActivateWindow(busydialognocancel)")
+
+
+def _busy_close():
+    xbmc.executebuiltin("Dialog.Close(busydialognocancel)")
+
+
+def _refresh_views():
+    """Bust caches + force a re-fetch, holding the spinner across the async refresh."""
+    clear_all_caches(expired_only=False)
+    bump_widget_reload()
+    xbmc.executebuiltin("Container.Refresh")
+    xbmc.sleep(_REFRESH_SETTLE_MS)
+
+
 def sync_trakt_rating(args):
     sync_type = args.get("sync_type")
 
     # Cache refresh (button 562) busts the cached metadata for the item and forces
-    # a widget/detail re-fetch. No AniList auth required.
+    # a widget/detail re-fetch. No AniList auth required. Spinner so it never looks
+    # like nothing happened.
     if sync_type == "cache_refresh":
-        clear_all_caches(expired_only=False)
-        bump_widget_reload()
-        xbmc.executebuiltin("Container.Refresh")
+        _busy_open()
+        try:
+            _refresh_views()
+        finally:
+            _busy_close()
         return
 
     client = AniListClient()
@@ -93,24 +117,26 @@ def sync_trakt_rating(args):
     if not mal_id or not sync_type:
         return
 
-    ok, action = client.save_media_score(int(mal_id), sync_type)
-    if ok:
-        labels = {
-            "like": "Liked",
-            "dislike": "Disliked",
-            "reset": "Rating cleared",
-            "added": "Added to My List",
-            "removed": "Removed from My List",
-        }
-        xbmcgui.Dialog().notification(
-            ADDON.getAddonInfo("name"),
-            labels.get(action, "Saved to AniList"),
-            xbmcgui.NOTIFICATION_INFO,
-            2500,
-        )
-        bump_widget_reload()
-        xbmc.executebuiltin("Container.Refresh")
-    else:
+    # A busy spinner stands in for the removed success toast: it shows the AniList
+    # request is in flight (the save + membership/score reads are a network round
+    # trip) and, being modal, also blocks the double-clicks that previously toggled
+    # an entry on then straight back off. Held across the refresh so it doesn't
+    # vanish before the label/icon flip. Closed in finally so an error never leaves
+    # the spinner stuck.
+    _busy_open()
+    ok = False
+    try:
+        ok, action = client.save_media_score(int(mal_id), sync_type)
+        if ok:
+            # Bust the AniList cache so My List (cached MediaListCollection) and the
+            # detail dialog's on-list/rating state (OnMyList/MyRating) reflect this
+            # change immediately. No success toast: the favourite button's label/icon
+            # flip ("Add To Favorite" + plus <-> "Remove From Favorite" + minus) via
+            # the OnMyList property the refreshed detail item carries is the feedback.
+            _refresh_views()
+    finally:
+        _busy_close()
+    if not ok:
         xbmcgui.Dialog().notification(
             ADDON.getAddonInfo("name"),
             "Could not update AniList rating.",
@@ -150,10 +176,16 @@ def select_artwork(args):
 
 
 def refresh_details(args):
-    """More-Info 'Refresh' (G6): bust cached metadata and force a re-fetch."""
-    clear_all_caches(expired_only=False)
-    bump_widget_reload()
-    xbmc.executebuiltin("Container.Refresh")
+    """More-Info 'Refresh' (G6): bust cached metadata and force a re-fetch.
+
+    Wrapped in the busy spinner so the button gives visible feedback -- the
+    re-fetch was otherwise silent and looked like nothing happened.
+    """
+    _busy_open()
+    try:
+        _refresh_views()
+    finally:
+        _busy_close()
 
 
 def main():
@@ -191,6 +223,16 @@ def main():
         return
     if args.get("clear_expired_cache") == "true":
         clear_cache(expired_only=True)
+        return
+    if args.get("anilist_login") == "true":
+        from resources.lib import anilist_login
+        if anilist_login.prompt_login():
+            bump_widget_reload()
+        return
+    if args.get("anilist_logout") == "true":
+        from resources.lib import anilist_login
+        if anilist_login.logout():
+            bump_widget_reload()
         return
     action = args.get("description") or args.get("wikipedia")
     if action:

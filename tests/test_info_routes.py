@@ -34,9 +34,12 @@ def captured(monkeypatch):
 
 
 class FakeClient:
-    def __init__(self, media, progress=0):
+    def __init__(self, media, progress=0, on_list=False, has_token=False, rating=""):
         self._media = media
         self._progress = progress
+        self._on_list = on_list
+        self._has_token = has_token
+        self._rating = rating
 
     def resolve_mal_id(self, params):
         return self._media.get("idMal")
@@ -46,6 +49,15 @@ class FakeClient:
 
     def get_progress(self, mal_id):
         return self._progress
+
+    def has_token(self):
+        return self._has_token
+
+    def on_planning(self, media_id):
+        return self._on_list
+
+    def list_state(self, media_id):
+        return {"planning": self._on_list, "rating": self._rating}
 
 
 def _media(mal=40748, anilist=101922, episodes=26, fmt="TV"):
@@ -102,6 +114,48 @@ class TestDetails:
         h.client = FakeClient(media)
         h.details()
         assert len(captured) == 1
+
+    def test_onmylist_true_when_on_planning(self, monkeypatch, captured):
+        media = _media()
+        h = InfoHandler(1, {"info": "details", "mal_id": "40748"})
+        h.client = FakeClient(media, on_list=True, has_token=True)
+        monkeypatch.setattr("resources.lib.info_routes.franchise_show_title", lambda f, t: "Demon Slayer")
+        monkeypatch.setattr(h, "_franchise", lambda m=None: _two_season_franchise(media))
+        h.details()
+        assert captured[0][1].getProperty("OnMyList") == "true"
+
+    def test_onmylist_empty_when_not_on_planning(self, monkeypatch, captured):
+        media = _media()
+        h = InfoHandler(1, {"info": "details", "mal_id": "40748"})
+        h.client = FakeClient(media, on_list=False, has_token=True)
+        monkeypatch.setattr("resources.lib.info_routes.franchise_show_title", lambda f, t: "Demon Slayer")
+        monkeypatch.setattr(h, "_franchise", lambda m=None: _two_season_franchise(media))
+        h.details()
+        assert captured[0][1].getProperty("OnMyList") == ""
+
+    def test_onmylist_set_under_cacheonly(self, monkeypatch, captured):
+        # The skin's 17195 detail loader ALWAYS calls details with cacheonly=true,
+        # so OnMyList/MyRating must be set on the cached load too (was the bug:
+        # gating it behind a live load left the button stuck on "Add to Favorite").
+        media = _media()
+        h = InfoHandler(1, {"info": "details", "mal_id": "40748", "cacheonly": "true"})
+        h.client = FakeClient(media, on_list=True, has_token=True)
+        h.details()
+        assert captured[0][1].getProperty("OnMyList") == "true"
+
+    def test_myrating_reflected_on_detail(self, monkeypatch, captured):
+        media = _media()
+        h = InfoHandler(1, {"info": "details", "mal_id": "40748", "cacheonly": "true"})
+        h.client = FakeClient(media, on_list=False, has_token=True, rating="like")
+        h.details()
+        assert captured[0][1].getProperty("MyRating") == "like"
+
+    def test_onmylist_empty_without_token(self, monkeypatch, captured):
+        media = _media()
+        h = InfoHandler(1, {"info": "details", "mal_id": "40748", "cacheonly": "true"})
+        h.client = FakeClient(media, on_list=True, has_token=False)
+        h.details()
+        assert captured[0][1].getProperty("OnMyList") == ""
 
 
 class TestSeasons:

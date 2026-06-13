@@ -13,8 +13,9 @@ def log(msg, level=LOGINFO):
 
 
 def sleep(ms):
-    import time
-    time.sleep(ms / 1000.0)
+    # No-op in tests: real waiting only slows the suite (e.g. default.py's
+    # post-refresh spinner-settle sleep). Tests assert behaviour, not timing.
+    pass
 
 
 def translatePath(path):

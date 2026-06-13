@@ -433,9 +433,12 @@ class TestAniListClientResolveMalId:
         result = client.resolve_mal_id({"mal_id": "40748"})
         assert result == 40748
 
-    def test_returns_tmdb_id_as_mal_id(self, client):
+    def test_tmdb_id_is_not_cast_to_mal_id(self, client):
+        # tmdb_id and mal_id are disjoint id spaces. A bare tmdb_id must NOT be
+        # returned as a MAL id (that scored the wrong title); tmdb_id is resolved
+        # only via the Fribb reverse map in identity.resolve_mal_id, never here.
         result = client.resolve_mal_id({"tmdb_id": "12345"})
-        assert result == 12345
+        assert result is None
 
     def test_non_digit_ignored(self, client):
         fixture = load_fixture("graphql_search_response.json")
@@ -456,13 +459,106 @@ class TestAniListClientResolveMalId:
         assert result is None
 
 
+class TestAniListClientPost404:
+    """AniList answers a not-found MediaList with HTTP 404 + a valid GraphQL body."""
+
+    def test_404_with_data_returns_data_not_raise(self, client):
+        # {"errors":[...], "data":{"MediaList": null}} at HTTP 404 is AniList's
+        # "no entry" answer -- _post must return the data payload, never raise.
+        resp = _mock_response(
+            {"errors": [{"message": "Not Found.", "status": 404}],
+             "data": {"MediaList": None}},
+            status_code=404,
+        )
+        client._session.post.return_value = resp
+
+        cache = MagicMock()
+        cache.get.return_value = None
+        cache.get_stale.return_value = None
+        with patch("resources.lib.api._CACHE", cache):
+            result = client._post("query { MediaList { progress } }", {"mediaId": 1})
+
+        assert result == {"MediaList": None}
+        resp.raise_for_status.assert_not_called()
+
+    def test_get_progress_returns_zero_on_404(self, client):
+        # End-to-end: a 404 from PROGRESS_QUERY degrades to progress 0.
+        client.has_token = MagicMock(return_value=True)
+        client.get_media = MagicMock(return_value={"id": 101280, "idMal": 37430})
+
+        def fake_post(query, variables=None, use_cache=True):
+            if "Viewer" in query:
+                return {"Viewer": {"id": 8029187, "name": "tester"}}
+            return {"MediaList": None}  # what the 404 path now yields
+
+        client._post = MagicMock(side_effect=fake_post)
+        assert client.get_progress(37430) == 0
+
+    def test_404_without_data_still_raises(self, client):
+        # A 404 with no usable GraphQL body is a real transport error.
+        resp = _mock_response({"message": "gateway"}, status_code=404)
+        resp.json.return_value = {"message": "gateway"}
+        from requests.exceptions import HTTPError
+        resp.raise_for_status.side_effect = HTTPError("404")
+        client._session.post.return_value = resp
+
+        cache = MagicMock()
+        cache.get.return_value = None
+        cache.get_stale.return_value = None
+        with patch("resources.lib.api._CACHE", cache):
+            result = client._post("query { Page { media { id } } }", {"page": 1})
+
+        # _post swallows the raised HTTPError and returns None (stale cache empty).
+        assert result is None
+
+
+class TestOnPlanning:
+    def test_true_when_media_in_planning(self, client):
+        client.has_token = MagicMock(return_value=True)
+        client._list_entries = MagicMock(
+            return_value=[{"id": 5, "media": {"id": 99}}, {"id": 6, "media": {"id": 7}}]
+        )
+        assert client.on_planning(99) is True
+
+    def test_false_when_media_absent(self, client):
+        client.has_token = MagicMock(return_value=True)
+        client._list_entries = MagicMock(return_value=[{"id": 6, "media": {"id": 7}}])
+        assert client.on_planning(99) is False
+
+    def test_false_without_token(self, client):
+        client.has_token = MagicMock(return_value=False)
+        client._list_entries = MagicMock()
+        assert client.on_planning(99) is False
+        client._list_entries.assert_not_called()
+
+
+class TestListState:
+    def test_planning_and_no_rating(self, client):
+        client._entry = MagicMock(return_value={"id": 1, "status": "PLANNING", "score": 0})
+        assert client.list_state(99) == {"planning": True, "rating": ""}
+
+    def test_like_from_high_score(self, client):
+        client._entry = MagicMock(return_value={"id": 1, "status": "CURRENT", "score": 85})
+        assert client.list_state(99) == {"planning": False, "rating": "like"}
+
+    def test_dislike_from_low_score(self, client):
+        client._entry = MagicMock(return_value={"id": 1, "status": "CURRENT", "score": 25})
+        assert client.list_state(99) == {"planning": False, "rating": "dislike"}
+
+    def test_no_entry(self, client):
+        client._entry = MagicMock(return_value=None)
+        assert client.list_state(99) == {"planning": False, "rating": ""}
+
+
 class TestSaveMediaScoreFavorites:
     """favorites/watchlist sync toggles AniList PLANNING membership (My List)."""
 
     def _client(self, client, on_list, post_result):
         client.has_token = MagicMock(return_value=True)
         client.get_media = MagicMock(return_value={"id": 99, "format": "TV"})
-        entries = [{"media": {"id": 99}}] if on_list else [{"media": {"id": 7}}]
+        # PLANNING entries carry their own list-entry id (555 here), which the
+        # delete path must key off -- not the media id.
+        entries = [{"id": 555, "media": {"id": 99}}] if on_list else [{"id": 7, "media": {"id": 7}}]
         client._list_entries = MagicMock(return_value=entries)
         client._post = MagicMock(return_value=post_result)
         return client
@@ -481,7 +577,9 @@ class TestSaveMediaScoreFavorites:
         ok, action = c.save_media_score(40748, "favorites")
         assert ok is True
         assert action == "removed"
-        assert "DeleteMediaListEntry" in c._post.call_args[0][0]
+        # DeleteMediaListEntry must be keyed by the list-entry id (555), not mediaId.
+        assert "DeleteMediaListEntry(id:" in c._post.call_args[0][0]
+        assert c._post.call_args[0][1] == {"id": 555}
 
     def test_watchlist_alias_behaves_like_favorites(self, client):
         c = self._client(client, on_list=False, post_result={"SaveMediaListEntry": {"id": 2}})
@@ -493,3 +591,55 @@ class TestSaveMediaScoreFavorites:
         ok, reason = client.save_media_score(40748, "favorites")
         assert ok is False
         assert reason == "not_logged_in"
+
+    def test_reset_deletes_by_entry_id(self, client):
+        client.has_token = MagicMock(return_value=True)
+        client.get_media = MagicMock(return_value={"id": 99, "format": "TV"})
+        client._entry_id = MagicMock(return_value=777)
+        client._post = MagicMock(return_value={"DeleteMediaListEntry": {"deleted": True}})
+        ok, action = client.save_media_score(40748, "reset")
+        assert (ok, action) == (True, "reset")
+        assert "DeleteMediaListEntry(id:" in client._post.call_args[0][0]
+        assert client._post.call_args[0][1] == {"id": 777}
+
+    def test_reset_is_idempotent_when_no_entry(self, client):
+        client.has_token = MagicMock(return_value=True)
+        client.get_media = MagicMock(return_value={"id": 99, "format": "TV"})
+        client._entry_id = MagicMock(return_value=None)
+        client._post = MagicMock()
+        ok, action = client.save_media_score(40748, "reset")
+        assert (ok, action) == (True, "reset")
+        client._post.assert_not_called()
+
+
+class TestSaveMediaScoreRating:
+    """like/dislike set the score but must NOT move the title off My List."""
+
+    def _client(self, client, existing_status):
+        client.has_token = MagicMock(return_value=True)
+        client.get_media = MagicMock(return_value={"id": 99, "format": "TV"})
+        entry = {"id": 5, "status": existing_status, "score": 0} if existing_status else None
+        client._entry = MagicMock(return_value=entry)
+        client._post = MagicMock(return_value={"SaveMediaListEntry": {"id": 5, "score": 85}})
+        return client
+
+    def test_like_preserves_existing_planning_status(self, client):
+        # Liking a favourited (PLANNING) title keeps it PLANNING -> stays on My List.
+        c = self._client(client, "PLANNING")
+        ok, action = c.save_media_score(40748, "like")
+        assert (ok, action) == (True, "like")
+        assert c._post.call_args[0][1] == {"mediaId": 99, "score": 85.0, "status": "PLANNING"}
+
+    def test_like_new_entry_defaults_current(self, client):
+        # No existing entry -> a TV title defaults to CURRENT.
+        c = self._client(client, None)
+        ok, action = c.save_media_score(40748, "like")
+        assert (ok, action) == (True, "like")
+        assert c._post.call_args[0][1]["status"] == "CURRENT"
+        assert c._post.call_args[0][1]["score"] == 85.0
+
+    def test_dislike_preserves_existing_current_status(self, client):
+        c = self._client(client, "CURRENT")
+        ok, action = c.save_media_score(40748, "dislike")
+        assert (ok, action) == (True, "dislike")
+        assert c._post.call_args[0][1] == {"mediaId": 99, "score": 25.0, "status": "CURRENT"}

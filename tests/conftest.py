@@ -28,3 +28,13 @@ sys.modules.setdefault("xbmcaddon", _xbmcaddon)
 sys.modules.setdefault("xbmcgui", _xbmcgui)
 sys.modules.setdefault("xbmcplugin", _xbmcplugin)
 sys.modules.setdefault("xbmcvfs", _xbmcvfs)
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _reset_addon_settings():
+    """Isolate per-addon stub settings between tests (token mirror/priority)."""
+    _xbmcaddon.reset()
+    yield
+    _xbmcaddon.reset()

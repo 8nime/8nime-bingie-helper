@@ -7,16 +7,59 @@ NOTIFICATION_ERROR = "error"
 
 
 class _Control:
-    """Stand-in for a Kodi list control (Window.getControl result)."""
+    """Stand-in for a Kodi control (Window.getControl result)."""
 
     def __init__(self):
         self._items = []
+        self._text = ""
 
     def reset(self):
         self._items = []
 
     def addItem(self, item):
         self._items.append(item)
+
+    def getText(self):
+        return self._text
+
+    def setText(self, text):
+        self._text = text
+
+    def setLabel(self, label):
+        self._text = label
+
+    def setImage(self, path):
+        self._image = path
+
+
+class WindowXMLDialog:
+    """Minimal WindowXMLDialog base so dialog controllers import under tests.
+
+    Tests don't render a UI; they monkeypatch the controller or its doModal."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def doModal(self):
+        pass
+
+    def close(self):
+        pass
+
+    def show(self):
+        pass
+
+    def getControl(self, control_id):
+        return _Control()
+
+    def setProperty(self, key, value):
+        pass
+
+    def getProperty(self, key):
+        return ""
+
+    def setFocusId(self, control_id):
+        pass
 
 
 class Window:

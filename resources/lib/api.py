@@ -209,6 +209,7 @@ query ($userId: Int, $status: MediaListStatus, $sort: [MediaListSort]) {
     MediaListCollection(userId: $userId, status: $status, type: ANIME, sort: $sort) {
         lists {
             entries {
+                id
                 progress
                 media {
                     %s
@@ -222,6 +223,36 @@ query ($userId: Int, $status: MediaListStatus, $sort: [MediaListSort]) {
 VIEWER_QUERY = """
 query { Viewer { id name } }
 """
+
+
+def validate_token(token):
+    """Verify a freshly-pasted AniList token and return its Viewer, or None.
+
+    A one-off request with the supplied bearer (not the AniListClient session,
+    whose Authorization header is fixed at construction) so a token can be
+    checked before it is saved. Returns {"id": int, "name": str} or None."""
+    token = (token or "").strip()
+    if not token:
+        return None
+    try:
+        resp = requests.post(
+            ANILIST_API,
+            json={"query": VIEWER_QUERY},
+            headers={
+                "Authorization": "Bearer %s" % token,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            return None
+        viewer = (resp.json().get("data") or {}).get("Viewer")
+    except Exception:
+        return None
+    if not viewer or not viewer.get("id"):
+        return None
+    return {"id": viewer.get("id"), "name": viewer.get("name") or ""}
 
 MEDIA_DETAIL_QUERY = """
 query ($idMal: Int, $id: Int, $type: MediaType) {
@@ -380,8 +411,10 @@ query ($search: String, $page: Int, $perpage: Int) {
 PROGRESS_QUERY = """
 query ($userId: Int, $mediaId: Int) {
     MediaList(userId: $userId, mediaId: $mediaId, type: ANIME) {
+        id
         progress
         status
+        score(format: POINT_100)
     }
 }
 """
@@ -451,6 +484,24 @@ class AniListClient:
                     )
                     time.sleep(retry_after)
                     continue
+                if resp.status_code == 404:
+                    # AniList answers a not-found MediaList (an unwatched title's
+                    # entry, e.g. get_progress / list_state) with HTTP 404 *and* a
+                    # valid GraphQL body {"data":{"MediaList":null}}. That is a
+                    # normal "no entry" result, not a transport error -- return its
+                    # data so callers degrade gracefully instead of raising and
+                    # log-spamming. Cached like a 200: the detail dialog re-issues
+                    # this query dozens of times per open, and the only way the
+                    # entry changes is a helper mutation, which busts the cache.
+                    try:
+                        parsed = resp.json()
+                    except Exception:
+                        parsed = None
+                    if isinstance(parsed, dict) and "data" in parsed:
+                        result = parsed.get("data")
+                        if use_cache and result is not None:
+                            _CACHE.set(query, variables, result)
+                        return result
                 if resp.status_code >= 400:
                     body = (resp.text or "")[:500]
                     xbmc.log(
@@ -643,10 +694,15 @@ class AniListClient:
         return int(entry.get("progress") or 0)
 
     def resolve_mal_id(self, params):
-        for key in ("mal_id", "tmdb_id"):
-            val = params.get(key)
-            if val and str(val).isdigit():
-                return int(val)
+        # Only `mal_id` is a genuine MAL id here. A `tmdb_id` must NOT be cast to a
+        # MAL id -- it is a different id space, and the offline Fribb reverse map
+        # (identity.resolve_mal_id, the sole caller that passes tmdb_id) has already
+        # tried it before falling back here. Blindly treating an unmapped tmdb_id as
+        # a MAL id scored/favourited the wrong title (e.g. tmdb 82684 -> "mal 82684"
+        # which is not the shown anime), so it is dropped.
+        val = params.get("mal_id")
+        if val and str(val).isdigit():
+            return int(val)
         anilist_id = params.get("anilist_id")
         if anilist_id and str(anilist_id).isdigit():
             media = self.get_media(anilist_id=int(anilist_id))
@@ -716,6 +772,69 @@ class AniListClient:
     def has_token(self):
         return has_anilist_token()
 
+    def _planning_entry_id(self, media_id):
+        """The user's PLANNING list-entry id for an AniList media id, or None.
+
+        AniList's DeleteMediaListEntry keys off the *list-entry* id, not the media
+        id, so the favourites toggle captures it from the collection it scans for
+        membership instead of issuing a second lookup.
+        """
+        if not self.has_token() or not media_id:
+            return None
+        target = int(media_id)
+        for e in self._list_entries("PLANNING", ["UPDATED_TIME_DESC"]):
+            if int((e.get("media") or {}).get("id") or 0) == target:
+                return e.get("id")
+        return None
+
+    def on_planning(self, media_id):
+        """True if the AniList media id is on the user's PLANNING list (My List).
+
+        The favourites toggle and the detail dialog's on-list state both read this:
+        favouriting writes a PLANNING entry, and My List renders the PLANNING list.
+        """
+        return self._planning_entry_id(media_id) is not None
+
+    def _entry(self, media_id):
+        """The user's MediaList entry for a media id ({id,status,score,progress}) or None.
+
+        One MediaList(userId, mediaId) read (cached) backs both reset (needs the
+        entry id) and the detail buttons' on-list / rating state.
+        """
+        if not self.has_token() or not media_id:
+            return None
+        viewer = self._post(VIEWER_QUERY)
+        if not viewer or not viewer.get("Viewer"):
+            return None
+        data = self._post(
+            PROGRESS_QUERY,
+            {"userId": viewer["Viewer"]["id"], "mediaId": int(media_id)},
+        )
+        return (data or {}).get("MediaList")
+
+    def _entry_id(self, media_id):
+        """The list-entry id for a media id in ANY status (for reset/delete), or None."""
+        entry = self._entry(media_id)
+        return entry.get("id") if entry else None
+
+    def list_state(self, media_id):
+        """Detail-button state for a media id: {'planning': bool, 'rating': str}.
+
+        rating is 'like' / 'dislike' / '' derived from the user's 0-100 score (the
+        like/dislike buttons set 85/25). PLANNING membership drives the favourite
+        button. Both come from one cached MediaList read."""
+        state = {"planning": False, "rating": ""}
+        entry = self._entry(media_id)
+        if not entry:
+            return state
+        state["planning"] = (entry.get("status") or "").upper() == "PLANNING"
+        score = entry.get("score") or 0
+        if score >= 55:
+            state["rating"] = "like"
+        elif 0 < score <= 45:
+            state["rating"] = "dislike"
+        return state
+
     def save_media_score(self, mal_id, sync_type):
         if not self.has_token():
             return False, "not_logged_in"
@@ -724,13 +843,19 @@ class AniListClient:
             return False, "no_media"
         media_id = int(media["id"])
         if sync_type == "reset":
+            # DeleteMediaListEntry keys off the list-entry id, NOT the media id
+            # (passing mediaId is a GraphQL error). Resolve the entry first; a
+            # missing entry is already "reset" -> idempotent success, no error toast.
+            entry_id = self._entry_id(media_id)
+            if not entry_id:
+                return True, "reset"
             data = self._post(
                 """
-                mutation ($mediaId: Int) {
-                    DeleteMediaListEntry(mediaId: $mediaId) { deleted }
+                mutation ($id: Int) {
+                    DeleteMediaListEntry(id: $id) { deleted }
                 }
                 """,
-                {"mediaId": media_id},
+                {"id": int(entry_id)},
             )
             deleted = (data or {}).get("DeleteMediaListEntry") or {}
             return bool(deleted.get("deleted")), "reset"
@@ -738,22 +863,18 @@ class AniListClient:
             # "Add to Favourites" (561) and the search-panel watchlist toggle both
             # populate the My List row, which reads the AniList PLANNING list
             # (watchlist()/_list_entries("PLANNING")). Toggle membership: if the
-            # title is already on the Planning list, remove it; otherwise add it.
-            # Reusing _list_entries means no demote of an already-watching entry —
-            # a CURRENT/COMPLETED title is absent from PLANNING, so it is added,
-            # and only a genuine PLANNING entry is ever deleted here.
-            on_list = any(
-                int((e.get("media") or {}).get("id") or 0) == media_id
-                for e in self._list_entries("PLANNING", ["UPDATED_TIME_DESC"])
-            )
-            if on_list:
+            # title is already on the Planning list, remove it by its entry id;
+            # otherwise add it. Only a genuine PLANNING entry is ever deleted here,
+            # so a CURRENT/COMPLETED title is added rather than demoted.
+            entry_id = self._planning_entry_id(media_id)
+            if entry_id:
                 data = self._post(
                     """
-                    mutation ($mediaId: Int) {
-                        DeleteMediaListEntry(mediaId: $mediaId) { deleted }
+                    mutation ($id: Int) {
+                        DeleteMediaListEntry(id: $id) { deleted }
                     }
                     """,
-                    {"mediaId": media_id},
+                    {"id": int(entry_id)},
                 )
                 deleted = (data or {}).get("DeleteMediaListEntry") or {}
                 return bool(deleted.get("deleted")), "removed"
@@ -770,8 +891,17 @@ class AniListClient:
         score = score_map.get(sync_type)
         if score is None:
             return False, "unknown"
-        fmt = (media.get("format") or "").upper()
-        status = "COMPLETED" if fmt in ("MOVIE", "ONE_SHOT") else "CURRENT"
+        # Rating must not move the title off My List. The favourite button owns
+        # PLANNING membership; like/dislike own only the score. So preserve any
+        # existing list status (e.g. PLANNING from a favourite) instead of forcing
+        # CURRENT -- which previously demoted a favourited title out of PLANNING,
+        # making the two buttons mutually exclusive. Only a brand-new entry gets a
+        # default status.
+        existing = self._entry(media_id) or {}
+        status = existing.get("status")
+        if not status:
+            fmt = (media.get("format") or "").upper()
+            status = "COMPLETED" if fmt in ("MOVIE", "ONE_SHOT") else "CURRENT"
         data = self._post(
             """
             mutation ($mediaId: Int, $score: Float, $status: MediaListStatus) {

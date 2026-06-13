@@ -162,6 +162,16 @@ class InfoHandler:
         detail = build_detail_item(media)
         items = [detail] if detail else []
         folders = set()
+        # On-list / rating state for the favourite + like/dislike buttons. Set on
+        # EVERY load (incl. cacheonly): the skin's 17195 detail loader only ever
+        # calls details with cacheonly=true, so gating this behind a live load left
+        # the buttons permanently in their default ("Add to Favorite") state. The
+        # PLANNING/MediaList reads are cached, and a toggle busts the cache + bumps
+        # the widget-reload token so 17195 re-queries and the label/icon flip.
+        if detail and self.client.has_token() and media.get("id"):
+            state = self.client.list_state(media["id"])
+            detail.setProperty("OnMyList", "true" if state.get("planning") else "")
+            detail.setProperty("MyRating", state.get("rating") or "")
         if detail and not is_movie:
             latest = self._latest_episode(media)
             if latest:
