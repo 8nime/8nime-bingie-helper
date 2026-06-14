@@ -7,6 +7,7 @@ import xbmcaddon
 import xbmcgui
 import xbmcplugin
 
+from resources.lib import watched
 from resources.lib.api import AniListClient, media_type_from_tmdb
 from resources.lib.constants import PLUGIN_URL
 from resources.lib.episodes import (
@@ -359,6 +360,14 @@ class InfoHandler:
         total_eps = int(episode_count) if is_split else total
         if not is_split and season_total:
             total_eps = int(season_total)
+        # Watched state: the always-on local store, unioned with AniList progress
+        # when logged in. Keyed by the PLAY episode (what play() records).
+        watched_eps = watched.watched_episodes(mal_id)
+        if self.client.has_token():
+            try:
+                watched_eps = watched_eps | set(range(1, self.client.get_progress(mal_id) + 1))
+            except Exception:
+                pass
         items = []
         for ep in range(1, last + 1):
             if is_split:
@@ -394,6 +403,7 @@ class InfoHandler:
                     ep_plot=meta.get("plot"),
                     ep_aired=meta.get("aired"),
                     play_episode=play_episode,
+                    watched=(play_episode in watched_eps),
                 )
             )
         return items
@@ -747,6 +757,31 @@ class InfoHandler:
         li = build_episode_item(mal_id, next_ep, show_title, total)
         return self._finish([li] if li else [], "episodes")
 
+    def _record_watched(self, mal_id, media, episode, is_movie):
+        """Mark an episode watched locally (always) + on AniList (when logged in).
+
+        Runs at play time (post-resolve) so it's optimistic -- marks on start, not on
+        completion -- which is what keeps the watched indicator + continue-watching in
+        sync without a background player monitor. Local tracking needs no AniList
+        login. Movies record episode 1 (-> AniList COMPLETED via update_progress)."""
+        if not mal_id:
+            return
+        if is_movie:
+            ep = 1
+        else:
+            try:
+                ep = int(episode)
+            except (TypeError, ValueError):
+                return
+            if ep < 1:
+                return
+        watched.mark_watched(mal_id, ep)
+        if media and media.get("id"):
+            try:
+                self.client.update_progress(media["id"], ep)
+            except Exception:
+                pass
+
     def play(self):
         """Resolve playback through the configured plugin at click time."""
         log_missing_plugin()
@@ -789,6 +824,7 @@ class InfoHandler:
         # picks a source.
         if get_playback_key() == PLAYBACK_OTAKU:
             xbmcplugin.setResolvedUrl(self.handle, True, xbmcgui.ListItem(path=path))
+            self._record_watched(mal_id, media, episode, is_movie)
             return True
 
         # WatchNixtoons2: pin the exact wcostream page ourselves (replicating
@@ -802,6 +838,7 @@ class InfoHandler:
             li = self._wnt2_play_item(mal_id, media, title, episode, is_movie)
             if li is not None:
                 xbmcplugin.setResolvedUrl(self.handle, True, li)
+                self._record_watched(mal_id, media, episode, is_movie)
                 return True
             # Miss (no title match / scrape miss) — fall through to WNT2 search.
 
@@ -815,6 +852,7 @@ class InfoHandler:
             li = self._fanimef_play_item(mal_id, media, title, episode, is_movie)
             if li is not None:
                 xbmcplugin.setResolvedUrl(self.handle, True, li)
+                self._record_watched(mal_id, media, episode, is_movie)
                 return True
             # Miss — fall through to launching fanimef's own (keyboard) search.
 

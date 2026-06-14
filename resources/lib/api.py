@@ -917,6 +917,47 @@ class AniListClient:
         )
         return bool((data or {}).get("SaveMediaListEntry")), sync_type
 
+    def update_progress(self, media_id, progress):
+        """Advance AniList watched progress to `progress` (never regresses).
+
+        Called when an episode is played (alongside the always-on local watched
+        store). Marks the entry CURRENT, or COMPLETED once the final episode is
+        reached; an existing COMPLETED is preserved. Guarded so re-watching an older
+        episode never rolls progress back. Returns (ok, status)."""
+        if not self.has_token() or not media_id:
+            return False, "not_logged_in"
+        try:
+            media_id = int(media_id)
+            progress = int(progress)
+        except (TypeError, ValueError):
+            return False, "bad_args"
+        if progress < 1:
+            return False, "bad_args"
+        existing = self._entry(media_id) or {}
+        if progress <= int(existing.get("progress") or 0):
+            return False, "no_advance"
+        status = (existing.get("status") or "").upper()
+        if status != "COMPLETED":
+            media = self.get_media(anilist_id=media_id)
+            total = int((media or {}).get("episodes") or 0)
+            status = "COMPLETED" if total and progress >= total else "CURRENT"
+        data = self._post(
+            """
+            mutation ($mediaId: Int, $progress: Int, $status: MediaListStatus) {
+                SaveMediaListEntry(mediaId: $mediaId, progress: $progress, status: $status) {
+                    id
+                    progress
+                    status
+                }
+            }
+            """,
+            {"mediaId": media_id, "progress": progress, "status": status},
+        )
+        ok = bool((data or {}).get("SaveMediaListEntry"))
+        if ok:
+            clear_all_caches(expired_only=False)
+        return ok, "progress"
+
     def random_pick(self, variables, trending=False, pool_size=25):
         variables = dict(variables)
         variables["page"] = random.randint(1, 3)

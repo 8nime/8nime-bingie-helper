@@ -356,6 +356,7 @@ def build_episode_item(
     ep_plot=None,
     ep_aired=None,
     play_episode=None,
+    watched=False,
 ):
     season = int(season or 1)
     episode = int(episode or 1)
@@ -387,6 +388,9 @@ def build_episode_item(
     }
     if ep_plot:
         info["plot"] = ep_plot
+    # playcount drives Kodi's native watched indicator (overlay/checkmark) for our
+    # plugin episode items -- set from the local watched store (+ AniList progress).
+    info["playcount"] = 1 if watched else 0
     if ep_aired:
         info["aired"] = ep_aired
         info["premiered"] = ep_aired

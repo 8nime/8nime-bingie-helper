@@ -33,8 +33,12 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _reset_addon_settings():
-    """Isolate per-addon stub settings between tests (token mirror/priority)."""
+def _reset_addon_settings(tmp_path):
+    """Isolate per-addon stub settings + the local watched store between tests."""
     _xbmcaddon.reset()
+    from resources.lib import watched as _watched
+    _watched.reset()
+    _watched._store_path = lambda: os.path.join(str(tmp_path), "watched.json")
     yield
     _xbmcaddon.reset()
+    _watched.reset()
