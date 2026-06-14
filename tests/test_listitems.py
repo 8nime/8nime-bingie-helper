@@ -519,24 +519,25 @@ class TestBuildEpisodeItem:
         assert li._info["video"].get("aired") == "2021-10-10"
 
     def test_in_progress_sets_partial_resume_point(self):
-        # In-progress episode -> a Kodi resume point (drives the skin's partial bar);
-        # playcount stays 0 so the skin's full "fake" bar does NOT show.
+        # In-progress episode -> the skin renders a PARTIAL bar at pos/dur (IsResumable),
+        # and playcount stays 0 so the full "fake" bar does NOT show.
         li = build_episode_item(40748, 3, "Demon Slayer", resume_pos=600, resume_dur=1440)
         tag = li.getVideoInfoTag()
-        assert tag.getResumeTime() == 600
-        assert tag.getResumeTimeTotal() == 1440
+        assert tag.isResumable() is True
+        assert tag.getPercentPlayed() == 42  # round(600/1440*100)
         assert li._info["video"]["playcount"] == 0
 
     def test_completed_sets_playcount_not_resume(self):
-        # Completed episode -> playcount=1 (full bar), NO resume point.
+        # Completed episode -> playcount=1 (full bar), NOT resumable (no partial bar).
         li = build_episode_item(40748, 3, "Demon Slayer", watched=True)
         assert li._info["video"]["playcount"] == 1
-        assert li.getVideoInfoTag().getResumeTime() == 0
+        assert li.getVideoInfoTag().isResumable() is False
+        assert li.getVideoInfoTag().getPercentPlayed() == 0
 
     def test_unwatched_has_no_resume_point(self):
         li = build_episode_item(40748, 3, "Demon Slayer")
         assert li._info["video"]["playcount"] == 0
-        assert li.getVideoInfoTag().getResumeTime() == 0
+        assert li.getVideoInfoTag().isResumable() is False
 
     def test_resume_ignored_without_duration(self):
         # No known duration -> can't compute a fraction, so no resume point.

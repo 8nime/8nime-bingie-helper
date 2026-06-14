@@ -285,7 +285,7 @@ def main():
         return
     if args.get("action") == "resumewatch":
         from resources.lib import resume
-        resume.babysit(args.get("mal_id"), args.get("episode"), args.get("aid"))
+        resume.babysit(args.get("aid"), args.get("episode"), args.get("mal_id"))
         return
     if args.get("action") == "catfilter":
         category_filter(args)

@@ -735,24 +735,6 @@ class AniListClient:
         has_next = bool((conn.get("pageInfo") or {}).get("hasNextPage"))
         return items, has_next
 
-    def get_progress(self, mal_id):
-        if not has_anilist_token():
-            return 0
-        viewer = self._post(VIEWER_QUERY)
-        if not viewer or not viewer.get("Viewer"):
-            return 0
-        media = self.get_media(mal_id=mal_id)
-        if not media:
-            return 0
-        data = self._post(
-            PROGRESS_QUERY,
-            {"userId": viewer["Viewer"]["id"], "mediaId": media["id"]},
-        )
-        entry = (data or {}).get("MediaList")
-        if not entry:
-            return 0
-        return int(entry.get("progress") or 0)
-
     def resolve_mal_id(self, params):
         # Only `mal_id` is a genuine MAL id here. A `tmdb_id` must NOT be cast to a
         # MAL id -- it is a different id space, and the offline Fribb reverse map
@@ -820,6 +802,19 @@ class AniListClient:
                 }
         if docs:
             progress_store.replace_all(docs)
+            # Reconcile local resume points against the sync: if the synced progress now
+            # covers a resumed episode AND that completion is more recent than the local
+            # resume point, the user finished it elsewhere -> clear the stale point so Play
+            # offers the next episode. The ts guard preserves a fresh local re-watch (its
+            # resume point is newer than the old completion), which must still resume.
+            for anilist_id in resume.recent_anilist_ids():
+                point = resume.get(anilist_id)
+                doc = progress_store.get(anilist_id)
+                if not point or not doc:
+                    continue
+                if (int(point.get("ep") or 0) <= int(doc.get("progress") or 0)
+                        and float(doc.get("ts") or 0) > float(point.get("ts") or 0)):
+                    resume.clear(anilist_id)
         return len(docs)
 
     def _list_entries(self, status, sort, use_cache=True):
@@ -871,13 +866,11 @@ class AniListClient:
             mal = doc.get("mal_id")
             media = self.get_media(mal_id=mal) if mal else self.get_media(anilist_id=anilist_id)
             _add(media, prog)
-        for mal_id in resume.recent_mal_ids():
-            if mal_id in seen:
-                continue
-            point = resume.get(mal_id)
+        for anilist_id in resume.recent_anilist_ids():
+            point = resume.get(anilist_id)
             if point:
                 # in-progress episode N -> completed up to N-1 (the seek resumes in N)
-                _add(self.get_media(mal_id=mal_id), max(0, int(point.get("ep") or 1) - 1))
+                _add(self.get_media(anilist_id=anilist_id), max(0, int(point.get("ep") or 1) - 1))
         return items
 
     def watchlist(self, page=1, per_page=50):
@@ -910,14 +903,6 @@ class AniListClient:
             if int((e.get("media") or {}).get("id") or 0) == target:
                 return e.get("id")
         return None
-
-    def on_planning(self, media_id):
-        """True if the AniList media id is on the user's PLANNING list (My List).
-
-        The favourites toggle and the detail dialog's on-list state both read this:
-        favouriting writes a PLANNING entry, and My List renders the PLANNING list.
-        """
-        return self._planning_entry_id(media_id) is not None
 
     def _entry(self, media_id):
         """The user's MediaList entry for a media id ({id,status,score,progress}) or None.

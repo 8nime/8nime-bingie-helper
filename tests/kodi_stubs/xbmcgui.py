@@ -124,6 +124,18 @@ class VideoInfoTag:
     def getResumeTimeTotal(self):
         return self._resume_total
 
+    # Test-only helpers that MODEL the skin infolabels Kodi derives from the resume
+    # point (ListItem.PercentPlayed / ListItem.IsResumable) -- these are NOT part of the
+    # real xbmc API; they let tests assert what the Bingie episode views actually render
+    # (a partial bar at pos/dur, resumable) instead of just echoing the stored floats.
+    def getPercentPlayed(self):
+        if self._resume_total > 0:
+            return int(round(100.0 * self._resume_time / self._resume_total))
+        return 0
+
+    def isResumable(self):
+        return self._resume_time > 0 and self._resume_total > 0
+
 
 class ListItem:
     def __init__(self, label="", label2="", path=""):

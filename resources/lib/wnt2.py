@@ -198,8 +198,10 @@ def _episode_list_cache_save():
     try:
         path = _episode_list_cache_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
+        tmp = "%s.tmp.%d" % (path, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as handle:
             json.dump(_EPISODE_LIST_CACHE, handle)
+        os.replace(tmp, path)
     except Exception:
         pass
 
@@ -475,8 +477,10 @@ def _series_cache_put(titles, series_url):
     try:
         path = _series_cache_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
+        tmp = "%s.tmp.%d" % (path, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as handle:
             json.dump(cache, handle)
+        os.replace(tmp, path)
     except Exception:
         pass
 

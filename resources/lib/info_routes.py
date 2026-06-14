@@ -346,7 +346,8 @@ class InfoHandler:
         if tmdb_id and tmdb_season:
             try:
                 tmdb_eps = tmdb.episode_stills(tmdb_id, tmdb_season)
-            except Exception:
+            except Exception as exc:
+                debuglog.dbg("episode_stills failed tmdb=%s s=%s: %s" % (tmdb_id, tmdb_season, exc))
                 tmdb_eps = {}
 
         # AniList streamingEpisodes fallback: numbered per SEASON (restarting each
@@ -374,11 +375,11 @@ class InfoHandler:
         prog = progress.progress_of(aid)
         watched_eps = set(range(1, prog + 1)) if prog else set()
         watched_eps |= progress.watched_set(aid)
-        # Local in-episode resume point (one in-progress episode per show, by mal_id)
-        # so the in-progress episode renders a PARTIAL progress bar (pos/dur) instead
-        # of a full one. Keyed/numbered by PLAY episode -- the same number babysit()
-        # records -- so it lines up with play_episode below.
-        resume_pt = resume.get(mal_id)
+        # Local in-episode resume point (one in-progress episode per show, keyed by
+        # AniList id like the progress store) so the in-progress episode renders a
+        # PARTIAL progress bar (pos/dur) instead of a full one. Numbered by PLAY episode
+        # -- the same number babysit() records -- so it lines up with play_episode below.
+        resume_pt = resume.get(aid)
         items = []
         for ep in range(1, last + 1):
             if is_split:
@@ -791,16 +792,17 @@ class InfoHandler:
         # than advancing to the next one (so a half-watched episode the progress store
         # already counts as done still resumes, and the Play button reads "Resume N"
         # via the skin's IsResumable variable). Never "done" while mid-episode.
-        point = resume.get(mal_id)
+        point = resume.get(aid)
         if point and resume.should_resume(point.get("pos"), point.get("dur")):
             episode, fully_done = int(point.get("ep") or episode), False
         return episode, fully_done, prog
 
-    def _upnext_item(self, mal_id, episode, title, total, **kwargs):
+    def _upnext_item(self, mal_id, anilist_id, episode, title, total, **kwargs):
         """Build the Play-button (next-up) listitem, attaching the local resume point
         when `episode` is the in-progress one. That sets ListItem.IsResumable, which the
-        skin's PlayOrResume label reads to show "Resume N" instead of "Play N"."""
-        point = resume.get(mal_id)
+        skin's PlayOrResume label reads to show "Resume N" instead of "Play N". The
+        resume point is keyed by AniList id; the item itself is built from mal_id."""
+        point = resume.get(anilist_id)
         if (point and int(point.get("ep") or 0) == int(episode)
                 and resume.should_resume(point.get("pos"), point.get("dur"))):
             kwargs["resume_pos"] = point.get("pos") or 0
@@ -824,7 +826,7 @@ class InfoHandler:
         # sequential network) just to populate the Play button.
         viewed_ep, viewed_done, viewed_prog = self._resume_episode(mal_id, media)
         if viewed_prog > 0 and not viewed_done:
-            li = self._upnext_item(mal_id, viewed_ep, _title(media), self._episode_total(media))
+            li = self._upnext_item(mal_id, media.get("id"), viewed_ep, _title(media), self._episode_total(media))
             return self._finish([li] if li else [], "episodes")
 
         # MONOLITH (One Piece etc.): one AniList entry, absolute episodes, no real
@@ -833,7 +835,7 @@ class InfoHandler:
         # the Play button).
         if self._is_monolith(media):
             debuglog.dbg("trakt_upnext MONOLITH short-circuit mal=%s ep=%s" % (mal_id, viewed_ep))
-            li = self._upnext_item(mal_id, viewed_ep, _title(media), self._episode_total(media))
+            li = self._upnext_item(mal_id, media.get("id"), viewed_ep, _title(media), self._episode_total(media))
             return self._finish([li] if li else [], "episodes")
 
         # The viewed cour is untouched (a sibling season may be the one in progress)
@@ -863,14 +865,15 @@ class InfoHandler:
             if cour is not None:
                 cour_media = cour.get("media") or {}
                 li = self._upnext_item(
-                    cour.get("mal_id"), ep, show_title, self._episode_total(cour_media),
+                    cour.get("mal_id"), cour_media.get("id"), ep, show_title,
+                    self._episode_total(cour_media),
                     season=cour.get("season") or 1, play_title=_title(cour_media),
                 )
                 return self._finish([li] if li else [], "episodes")
 
         # Non-franchise: resume the viewed title (ep 1 when nothing is watched).
         total = media.get("episodes") or viewed_ep
-        li = self._upnext_item(mal_id, viewed_ep, show_title, total)
+        li = self._upnext_item(mal_id, media.get("id"), viewed_ep, show_title, total)
         return self._finish([li] if li else [], "episodes")
 
     def _record_watched(self, mal_id, media, episode, is_movie):
@@ -883,8 +886,9 @@ class InfoHandler:
         half-watched episode stays "unwatched" so Play resumes it (with the seek)
         instead of skipping ahead. Not a permanent service; the script exits when this
         playback ends. Movies track as episode 1."""
-        if not mal_id:
-            return
+        aid = (media or {}).get("id")
+        if not aid:
+            return  # no AniList id -> nothing to key resume/completion on
         if is_movie:
             ep = 1
         else:
@@ -894,14 +898,13 @@ class InfoHandler:
                 return
             if ep < 1:
                 return
-        aid = (media or {}).get("id") or ""
         try:
             xbmc.executebuiltin(
-                "RunScript(%s, action=resumewatch, mal_id=%s, episode=%s, aid=%s)"
-                % (ADDON_ID, mal_id, ep, aid)
+                "RunScript(%s, action=resumewatch, aid=%s, episode=%s, mal_id=%s)"
+                % (ADDON_ID, aid, ep, mal_id or "")
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            debuglog.dbg("resumewatch launch failed aid=%s ep=%s: %s" % (aid, ep, exc))
 
     def play(self):
         """Resolve playback through the configured plugin at click time."""
@@ -987,7 +990,10 @@ class InfoHandler:
             get_playback_key(), "the configured source")
         xbmcgui.Dialog().notification(
             "8nime", "Searching {0}…".format(backend), xbmcgui.NOTIFICATION_INFO, 3000)
-        xbmc.executebuiltin('ActivateWindow(Videos,{0},return)'.format(path))
+        # Quote the path: it's a plugin:// URL with &-joined params incl. an arbitrary
+        # title= (anime titles often contain commas/quotes), and executebuiltin splits
+        # its argument on commas -- an unquoted comma in the title breaks the call.
+        xbmc.executebuiltin('ActivateWindow(Videos,"{0}",return)'.format(path))
         return True
 
     def _search_titles(self, mal_id, media, title):

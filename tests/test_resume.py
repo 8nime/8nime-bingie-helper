@@ -54,55 +54,72 @@ class TestStore:
         resume.reset()  # drop in-process cache -> next read hits disk
         assert resume.get(40748)["ep"] == 3
 
-    def test_recent_mal_ids_most_recent_first(self):
+    def test_recent_anilist_ids_most_recent_first(self):
         resume.set_point(111, 1, 100.0, 1400.0)
         resume.set_point(222, 1, 100.0, 1400.0)  # written later -> newer ts
-        recent = resume.recent_mal_ids()
+        recent = resume.recent_anilist_ids()
         assert recent[0] == 222
         assert set(recent) == {111, 222}
 
 
 class TestBabysit:
+    # The store is keyed by AniList id; babysit(anilist_id, episode, mal_id=None).
     def test_captures_stop_position(self):
         # Playback ends at 200s of a 1400s episode -> a resume point is stored and the
         # episode is NOT marked watched (completion-based: only ~90% counts).
         xbmc._set_playback([(100, 1400), (200, 1400)])
-        resume.babysit("40748", 5, aid=101922)
-        point = resume.get(40748)
+        resume.babysit(101922, 5, mal_id=40748)
+        point = resume.get(101922)
         assert point["ep"] == 5
         assert point["pos"] == 200
         assert progress.is_watched(101922, 5) is False
 
     def test_finished_episode_marks_watched_and_clears_point(self):
         # Pre-existing resume point; this play runs to ~the end -> watched + cleared.
-        resume.set_point(40748, 5, 200.0, 1400.0)
+        resume.set_point(101922, 5, 200.0, 1400.0)
         xbmc._set_playback([(1300, 1400), (1390, 1400)])
-        resume.babysit("40748", 5, aid=101922)
-        assert resume.get(40748) is None
+        resume.babysit(101922, 5, mal_id=40748)
+        assert resume.get(101922) is None
         assert progress.is_watched(101922, 5) is True
 
     def test_seeks_to_saved_position_for_same_episode(self):
-        resume.set_point(40748, 5, 742.0, 1400.0)
+        resume.set_point(101922, 5, 742.0, 1400.0)
         pb = xbmc._set_playback([(742, 1400), (800, 1400)])
-        resume.babysit("40748", 5)
+        resume.babysit(101922, 5)
         assert 742.0 in pb["seek"]
 
     def test_does_not_seek_for_different_episode(self):
-        resume.set_point(40748, 5, 742.0, 1400.0)
+        resume.set_point(101922, 5, 742.0, 1400.0)
         pb = xbmc._set_playback([(10, 1400), (60, 1400)])
-        resume.babysit("40748", 6)  # playing a different episode
+        resume.babysit(101922, 6)  # playing a different episode
         assert pb["seek"] == []
+
+    def test_does_not_seek_on_duration_mismatch(self):
+        # Saved against a 1400s encode, but the re-resolved stream is only 90s (a wrong
+        # scraper match) -> don't seek (seeking past its end would falsely complete it).
+        resume.set_point(101922, 5, 742.0, 1400.0)
+        pb = xbmc._set_playback([(10, 90), (40, 90)])
+        resume.babysit(101922, 5)
+        assert pb["seek"] == []
+
+    def test_stores_resume_when_duration_unknown(self):
+        # A provider that reports no duration -> can't be "finished", but a position
+        # well past the floor is still stored.
+        xbmc._set_playback([(120, 0), (200, 0)])
+        resume.babysit(101922, 5)
+        point = resume.get(101922)
+        assert point is not None and point["pos"] == 200
 
     def test_no_playback_is_noop(self):
         xbmc._set_playback([])  # nothing ever plays
-        resume.babysit("40748", 5)
-        assert resume.get(40748) is None
+        resume.babysit(101922, 5)
+        assert resume.get(101922) is None
 
     def test_superseded_session_does_not_clobber(self, monkeypatch):
         # A newer play owns the session token -> this babysitter must NOT overwrite
         # the (newer) saved point with the position it is sampling.
-        resume.set_point(40748, 5, 200.0, 1400.0)
+        resume.set_point(101922, 5, 200.0, 1400.0)
         xbmc._set_playback([(300, 1400), (400, 1400)])
         monkeypatch.setattr(resume, "_read_session", lambda: "a-newer-session")
-        resume.babysit("40748", 5)
-        assert resume.get(40748)["pos"] == 200.0  # untouched
+        resume.babysit(101922, 5)
+        assert resume.get(101922)["pos"] == 200.0  # untouched

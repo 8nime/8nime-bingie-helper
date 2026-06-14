@@ -48,14 +48,8 @@ class FakeClient:
     def get_media(self, mal_id=None, anilist_id=None):
         return self._media
 
-    def get_progress(self, mal_id):
-        return self._progress
-
     def has_token(self):
         return self._has_token
-
-    def on_planning(self, media_id):
-        return self._on_list
 
     def list_state(self, media_id):
         return {"planning": self._on_list, "rating": self._rating}
@@ -279,33 +273,34 @@ class TestEpisodeProgressBar:
         return self._by_episode(captured)
 
     def test_in_progress_episode_gets_partial_resume_point(self, monkeypatch, captured):
-        resume.set_point(40748, 3, 600, 1440)  # stopped 10 min into a 24 min episode
+        resume.set_point(101922, 3, 600, 1440)  # stopped 10 min into a 24 min episode (anilist id)
         items = self._run(monkeypatch, captured, _media())
         tag = items[3].getVideoInfoTag()
-        assert tag.getResumeTime() == 600
-        assert tag.getResumeTimeTotal() == 1440
+        assert tag.isResumable() is True
+        assert tag.getPercentPlayed() == 42  # round(600/1440*100) -> partial bar
         assert items[3]._info["video"]["playcount"] == 0
 
     def test_completed_episode_full_bar_no_resume(self, monkeypatch, captured):
         progress.apply_anilist(101922, 40748, 2, total=26)  # eps 1-2 completed
         items = self._run(monkeypatch, captured, _media())
         assert items[1]._info["video"]["playcount"] == 1
-        assert items[1].getVideoInfoTag().getResumeTime() == 0
+        assert items[1].getVideoInfoTag().isResumable() is False
 
     def test_unwatched_episode_has_no_bar(self, monkeypatch, captured):
         items = self._run(monkeypatch, captured, _media())
         assert items[5]._info["video"]["playcount"] == 0
-        assert items[5].getVideoInfoTag().getResumeTime() == 0
+        assert items[5].getVideoInfoTag().isResumable() is False
 
     def test_resume_point_overrides_stale_watched_mark(self, monkeypatch, captured):
         # A live, unfinished resume point is authoritative: even if the episode-level
         # progress (e.g. AniList sync) counts ep2 as watched, a partway position wins
         # -> partial bar, not the full "completed" bar (the Re:Zero S4E5 case).
-        resume.set_point(40748, 2, 600, 1440)
+        resume.set_point(101922, 2, 600, 1440)
         progress.apply_anilist(101922, 40748, 2, total=26)
         items = self._run(monkeypatch, captured, _media())
         assert items[2]._info["video"]["playcount"] == 0
-        assert items[2].getVideoInfoTag().getResumeTime() == 600
+        assert items[2].getVideoInfoTag().isResumable() is True
+        assert items[2].getVideoInfoTag().getPercentPlayed() == 42
 
 
 class TestSortOrder:
@@ -528,7 +523,7 @@ class TestTraktUpNext:
         # partway resume point -> Play resumes ep5, not ep6, and the item is resumable
         # so the skin renders "Resume 5" instead of "Play 6".
         progress.apply_anilist(101922, 40748, 5, total=26)
-        resume.set_point(40748, 5, 600, 1440)
+        resume.set_point(101922, 5, 600, 1440)
         media = _media()
         h = InfoHandler(1, {"info": "trakt_upnext", "mal_id": "40748"})
         h.client = FakeClient(media)
@@ -536,7 +531,7 @@ class TestTraktUpNext:
         h.trakt_upnext()
         li = captured[0][1]
         assert "episode=5" in li.getPath()
-        assert li.getVideoInfoTag().getResumeTime() == 600  # IsResumable -> "Resume"
+        assert li.getVideoInfoTag().isResumable() is True  # skin shows "Resume 5"
 
     def test_no_resume_point_targets_next_and_not_resumable(self, monkeypatch, captured):
         # Without a resume point the Play button advances normally and is NOT resumable
@@ -549,7 +544,7 @@ class TestTraktUpNext:
         h.trakt_upnext()
         li = captured[0][1]
         assert "episode=6" in li.getPath()
-        assert li.getVideoInfoTag().getResumeTime() == 0
+        assert li.getVideoInfoTag().isResumable() is False  # skin shows "Play 6"
 
     def test_franchise_advances_past_finished_season(self, monkeypatch, captured):
         # S1 fully aired (26 eps) + fully watched -> advance to S2; S2 has 11 eps,

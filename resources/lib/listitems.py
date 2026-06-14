@@ -501,12 +501,7 @@ def build_season_item(mal_id, show_title, episode_count, season=1, label=None, m
 
 def _classification(media):
     """Derive a coarse content classification from AniList (no MPAA on AniList)."""
-    if media.get("isAdult"):
-        return "R18+"
-    fmt = (media.get("format") or "").upper()
-    if fmt in ("MOVIE", "ONE_SHOT"):
-        return "PG-13"
-    return "PG-13"
+    return "R18+" if media.get("isAdult") else "PG-13"
 
 
 def build_poster_item(media, label=None):

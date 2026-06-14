@@ -26,23 +26,15 @@ Document (flat, per AniList entry):
 Episode numbers use the PLAY numbering the rest of the addon uses: cour-local for a
 normal Fribb cour, ABSOLUTE for a TMDB-split monolith.
 """
-import json
-import os
 import time
 
-import xbmcvfs
-
-from resources.lib.constants import ADDON_ID
+from resources.lib import store
 
 _CACHE = None  # in-process {str(anilist_id): {...}}
 
 
 def _store_path():
-    try:
-        base = xbmcvfs.translatePath("special://profile/addon_data/%s/" % ADDON_ID)
-    except Exception:
-        base = os.path.join(os.path.expanduser("~"), ".%s" % ADDON_ID)
-    return os.path.join(base, "progress.json")
+    return store.store_path("progress.json")
 
 
 def _load():
@@ -50,34 +42,22 @@ def _load():
     if _CACHE is not None:
         return _CACHE
     _CACHE = {}
-    try:
-        path = _store_path()
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as handle:
-                raw = json.load(handle) or {}
-            for key, val in raw.items():
-                if not isinstance(val, dict):
-                    continue
-                _CACHE[str(key)] = {
-                    "mal_id": val.get("mal_id"),
-                    "total": int(val.get("total") or 0),
-                    "progress": int(val.get("progress") or 0),
-                    "watched": {str(e): True for e in (val.get("watched") or {})},
-                    "ts": float(val.get("ts") or 0.0),
-                }
-    except Exception:
-        _CACHE = {}
+    raw = store.read_json(_store_path(), {}) or {}
+    for key, val in raw.items():
+        if not isinstance(val, dict):
+            continue
+        _CACHE[str(key)] = {
+            "mal_id": val.get("mal_id"),
+            "total": int(val.get("total") or 0),
+            "progress": int(val.get("progress") or 0),
+            "watched": {str(e): True for e in (val.get("watched") or {})},
+            "ts": float(val.get("ts") or 0.0),
+        }
     return _CACHE
 
 
 def _save(data):
-    try:
-        path = _store_path()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(data, handle)
-    except Exception:
-        pass
+    store.atomic_write_json(_store_path(), data)
 
 
 def _doc(anilist_id):
@@ -209,6 +189,10 @@ def replace_all(docs):
         if existing:
             incoming = dict(incoming)
             incoming["progress"] = max(int(existing.get("progress") or 0), int(incoming.get("progress") or 0))
+            # Keep the higher known episode count: a lean re-sync can return total=0
+            # for an ongoing show, which must not regress a previously-known count
+            # (the caught-up / last-released logic depends on it).
+            incoming["total"] = max(int(existing.get("total") or 0), int(incoming.get("total") or 0))
             incoming["watched"] = dict(existing.get("watched") or {})
             incoming["ts"] = max(float(existing.get("ts") or 0), float(incoming.get("ts") or 0))
         data[skey] = incoming

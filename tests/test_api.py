@@ -481,19 +481,6 @@ class TestAniListClientPost404:
         assert result == {"MediaList": None}
         resp.raise_for_status.assert_not_called()
 
-    def test_get_progress_returns_zero_on_404(self, client):
-        # End-to-end: a 404 from PROGRESS_QUERY degrades to progress 0.
-        client.has_token = MagicMock(return_value=True)
-        client.get_media = MagicMock(return_value={"id": 101280, "idMal": 37430})
-
-        def fake_post(query, variables=None, use_cache=True):
-            if "Viewer" in query:
-                return {"Viewer": {"id": 8029187, "name": "tester"}}
-            return {"MediaList": None}  # what the 404 path now yields
-
-        client._post = MagicMock(side_effect=fake_post)
-        assert client.get_progress(37430) == 0
-
     def test_404_without_data_still_raises(self, client):
         # A 404 with no usable GraphQL body is a real transport error.
         resp = _mock_response({"message": "gateway"}, status_code=404)
@@ -512,23 +499,23 @@ class TestAniListClientPost404:
         assert result is None
 
 
-class TestOnPlanning:
-    def test_true_when_media_in_planning(self, client):
+class TestPlanningEntryId:
+    def test_returns_entry_id_when_in_planning(self, client):
         client.has_token = MagicMock(return_value=True)
         client._list_entries = MagicMock(
             return_value=[{"id": 5, "media": {"id": 99}}, {"id": 6, "media": {"id": 7}}]
         )
-        assert client.on_planning(99) is True
+        assert client._planning_entry_id(99) == 5
 
-    def test_false_when_media_absent(self, client):
+    def test_none_when_media_absent(self, client):
         client.has_token = MagicMock(return_value=True)
         client._list_entries = MagicMock(return_value=[{"id": 6, "media": {"id": 7}}])
-        assert client.on_planning(99) is False
+        assert client._planning_entry_id(99) is None
 
-    def test_false_without_token(self, client):
+    def test_none_without_token(self, client):
         client.has_token = MagicMock(return_value=False)
         client._list_entries = MagicMock()
-        assert client.on_planning(99) is False
+        assert client._planning_entry_id(99) is None
         client._list_entries.assert_not_called()
 
 
@@ -685,3 +672,82 @@ class TestSyncProgress:
         monkeypatch.setattr(api_module, "has_anilist_token", lambda: False)
         assert client.sync_progress() == 0
         assert progress.get(21) is None
+
+    def test_sync_clears_resume_finished_elsewhere(self, client, monkeypatch):
+        # Synced progress now covers the resumed episode AND is newer than the local
+        # resume point -> finished on another device -> drop the stale point.
+        from resources.lib import resume
+        monkeypatch.setattr(api_module, "has_anilist_token", lambda: True)
+        resume.set_point(21, 5, 600.0, 1400.0)
+
+        def fake_post(query, variables=None, use_cache=True):
+            if "Viewer" in query:
+                return {"Viewer": {"id": 7}}
+            return {"MediaListCollection": {"lists": [{"entries": [
+                {"progress": 8, "updatedAt": 9999999999,  # past ep5, newer than the point
+                 "media": {"id": 21, "idMal": 21, "episodes": 26}},
+            ]}]}}
+
+        monkeypatch.setattr(client, "_post", fake_post)
+        client.sync_progress()
+        assert resume.get(21) is None
+
+    def test_sync_keeps_fresh_rewatch_resume(self, client, monkeypatch):
+        # The local resume point is NEWER than the synced completion (an active re-watch)
+        # -> it must survive the sync so the episode still resumes.
+        from resources.lib import resume
+        monkeypatch.setattr(api_module, "has_anilist_token", lambda: True)
+        resume.set_point(21, 5, 600.0, 1400.0)
+
+        def fake_post(query, variables=None, use_cache=True):
+            if "Viewer" in query:
+                return {"Viewer": {"id": 7}}
+            return {"MediaListCollection": {"lists": [{"entries": [
+                {"progress": 8, "updatedAt": 100,  # old completion, older than the point
+                 "media": {"id": 21, "idMal": 21, "episodes": 26}},
+            ]}]}}
+
+        monkeypatch.setattr(client, "_post", fake_post)
+        client.sync_progress()
+        assert resume.get(21) is not None
+
+
+class TestNextUp:
+    """Continue Watching: in-progress entries from the progress store + mid-episode
+    resume points, deduped by mal_id, caught-up shows dropped."""
+
+    def _media(self, mal, eps):
+        return {"id": mal * 10, "idMal": mal, "episodes": eps, "title": {"english": "T%d" % mal}}
+
+    def test_lists_in_progress_drops_caught_up(self, client, monkeypatch):
+        from resources.lib import progress
+        progress.apply_anilist(70, 7, 4, total=26, updated_at=200)   # in progress
+        progress.apply_anilist(90, 9, 12, total=12, updated_at=300)  # caught up -> dropped
+        media = {7: self._media(7, 26), 9: self._media(9, 12)}
+        monkeypatch.setattr(client, "get_media",
+                            lambda mal_id=None, anilist_id=None: media.get(mal_id))
+        items = client.next_up()
+        mals = [m["idMal"] for m in items]
+        assert 7 in mals and 9 not in mals
+        assert next(m for m in items if m["idMal"] == 7)["_progress"] == 4
+
+    def test_resume_point_only_show_appears(self, client, monkeypatch):
+        from resources.lib import resume
+        resume.set_point(303, 5, 600.0, 1400.0)  # started ep5, nothing finished
+        media = {303: {"id": 303, "idMal": 33, "episodes": 24, "title": {}}}
+        monkeypatch.setattr(client, "get_media",
+                            lambda mal_id=None, anilist_id=None: media.get(anilist_id))
+        items = client.next_up()
+        assert [m["idMal"] for m in items] == [33]
+        assert items[0]["_progress"] == 4  # mid ep5 -> completed up to 4
+
+    def test_dedup_progress_wins_over_resume(self, client, monkeypatch):
+        from resources.lib import progress, resume
+        progress.apply_anilist(50, 5, 3, total=26, updated_at=100)
+        resume.set_point(50, 8, 100.0, 1400.0)  # same AniList id also has a resume point
+        media = {5: self._media(5, 26), 50: self._media(5, 26)}
+        monkeypatch.setattr(client, "get_media",
+                            lambda mal_id=None, anilist_id=None: media.get(mal_id) or media.get(anilist_id))
+        items = client.next_up()
+        assert [m["idMal"] for m in items].count(5) == 1  # deduped by mal_id
+        assert items[0]["_progress"] == 3  # progress tier wins
