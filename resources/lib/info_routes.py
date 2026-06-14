@@ -797,6 +797,13 @@ class InfoHandler:
             episode, fully_done = int(point.get("ep") or episode), False
         return episode, fully_done, prog
 
+    def _has_resume(self, media):
+        """True when the entry has a live (unfinished) local resume point. An entry can
+        be 'in progress' via a resume point alone -- with NO completed episode yet -- so
+        the Play button must treat that as in-progress too, not just `progress > 0`."""
+        point = resume.get((media or {}).get("id"))
+        return bool(point and resume.should_resume(point.get("pos"), point.get("dur")))
+
     def _upnext_item(self, mal_id, anilist_id, episode, title, total, **kwargs):
         """Build the Play-button (next-up) listitem, attaching the local resume point
         when `episode` is the in-progress one. That sets ListItem.IsResumable, which the
@@ -825,7 +832,7 @@ class InfoHandler:
         # you're on) AND it skips collecting the whole franchise (~0.5s/cour of
         # sequential network) just to populate the Play button.
         viewed_ep, viewed_done, viewed_prog = self._resume_episode(mal_id, media)
-        if viewed_prog > 0 and not viewed_done:
+        if (viewed_prog > 0 or self._has_resume(media)) and not viewed_done:
             li = self._upnext_item(mal_id, media.get("id"), viewed_ep, _title(media), self._episode_total(media))
             return self._finish([li] if li else [], "episodes")
 
@@ -851,7 +858,7 @@ class InfoHandler:
             latest = None  # (idx, cour, episode, fully_done)
             for idx, cour in enumerate(cours):
                 ep, done, prog = self._resume_episode(cour.get("mal_id"), cour.get("media") or {})
-                if prog > 0:
+                if prog > 0 or self._has_resume(cour.get("media")):
                     latest = (idx, cour, ep, done)
             if latest is not None:
                 idx, cour, ep, done = latest

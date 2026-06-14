@@ -533,6 +533,19 @@ class TestTraktUpNext:
         assert "episode=5" in li.getPath()
         assert li.getVideoInfoTag().isResumable() is True  # skin shows "Resume 5"
 
+    def test_resume_only_show_is_resumable_with_zero_progress(self, monkeypatch, captured):
+        # A resume point but NO completed episode (progress 0) -> the Play button must
+        # still read "Resume N" (the JJK ep1 case), not fall through to "Play 1".
+        resume.set_point(101922, 3, 354, 1435)  # mid ep3, nothing finished
+        media = _media()
+        h = InfoHandler(1, {"info": "trakt_upnext", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: [])
+        h.trakt_upnext()
+        li = captured[0][1]
+        assert "episode=3" in li.getPath()
+        assert li.getVideoInfoTag().isResumable() is True
+
     def test_no_resume_point_targets_next_and_not_resumable(self, monkeypatch, captured):
         # Without a resume point the Play button advances normally and is NOT resumable
         # (skin shows "Play N").
