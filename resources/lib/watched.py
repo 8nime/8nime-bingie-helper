@@ -2,20 +2,24 @@
 """Local watched-episode tracking — independent of AniList.
 
 A small JSON store under the addon profile dir records which episodes the user has
-played, keyed by mal_id. This makes the watched indicator work for everyone (not
-just AniList-logged-in users); when a token IS present, AniList progress is unioned
-in on top (see info_routes). Episode numbers are the PLAY episode (cour-local for a
-normal cour, absolute for a TMDB-split monolith) -- the same number the play() route
-records and the episode item carries -- so the two always line up.
+played (and when), keyed by mal_id. This makes the watched indicator AND the
+Continue Watching row work for everyone (not just AniList-logged-in users); when a
+token IS present, AniList progress/CURRENT is unioned in on top (see api/info_routes).
+
+Store format: {str(mal_id): {"eps": [int...], "ts": <unix float>}}. An older
+list-only format ({mal_id: [eps]}) is migrated transparently on load.
+Episode numbers are the PLAY episode (cour-local for a normal cour, absolute for a
+TMDB-split monolith) -- the same number play() records and the episode item carries.
 """
 import json
 import os
+import time
 
 import xbmcvfs
 
 from resources.lib.constants import ADDON_ID
 
-_CACHE = None  # in-process {str(mal_id): set(int)} cache
+_CACHE = None  # in-process {str(mal_id): {"eps": set(int), "ts": float}}
 
 
 def _store_path():
@@ -31,22 +35,32 @@ def _load():
     if _CACHE is not None:
         return _CACHE
     _CACHE = {}
-    path = _store_path()
     try:
+        path = _store_path()
         if os.path.exists(path):
             with open(path, encoding="utf-8") as handle:
                 raw = json.load(handle) or {}
-            _CACHE = {str(k): set(int(e) for e in v) for k, v in raw.items()}
+            for key, val in raw.items():
+                if isinstance(val, dict):  # current format
+                    eps = set(int(e) for e in val.get("eps", []))
+                    ts = float(val.get("ts") or 0)
+                else:  # legacy list-only format
+                    eps = set(int(e) for e in val)
+                    ts = 0.0
+                _CACHE[str(key)] = {"eps": eps, "ts": ts}
     except Exception:
         _CACHE = {}
     return _CACHE
 
 
 def _save(data):
-    path = _store_path()
     try:
+        path = _store_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        serializable = {k: sorted(v) for k, v in data.items() if v}
+        serializable = {
+            k: {"eps": sorted(v["eps"]), "ts": v["ts"]}
+            for k, v in data.items() if v.get("eps")
+        }
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(serializable, handle)
     except Exception:
@@ -57,7 +71,8 @@ def watched_episodes(mal_id):
     """Set of locally-watched episode numbers for a mal_id (empty set if none)."""
     if not mal_id:
         return set()
-    return set(_load().get(str(mal_id), set()))
+    entry = _load().get(str(mal_id))
+    return set(entry["eps"]) if entry else set()
 
 
 def is_watched(mal_id, episode):
@@ -68,7 +83,9 @@ def is_watched(mal_id, episode):
 
 
 def mark_watched(mal_id, episode):
-    """Record an episode as watched locally. Idempotent; persists immediately."""
+    """Record an episode as watched locally (with a timestamp). Persists immediately.
+
+    Returns True when newly recorded, False when already present / invalid."""
     if not mal_id:
         return False
     try:
@@ -78,12 +95,29 @@ def mark_watched(mal_id, episode):
     if episode < 1:
         return False
     data = _load()
-    eps = data.setdefault(str(mal_id), set())
-    if episode in eps:
-        return False
-    eps.add(episode)
+    entry = data.setdefault(str(mal_id), {"eps": set(), "ts": 0.0})
+    new = episode not in entry["eps"]
+    entry["eps"].add(episode)
+    entry["ts"] = time.time()  # bump recency even on a re-watch
     _save(data)
-    return True
+    return new
+
+
+def recent_mal_ids(limit=40):
+    """mal_ids with locally-watched episodes, most-recently-watched first."""
+    data = _load()
+    ordered = sorted(data.items(), key=lambda kv: kv[1].get("ts") or 0, reverse=True)
+    out = []
+    for key, val in ordered:
+        if not val.get("eps"):
+            continue
+        try:
+            out.append(int(key))
+        except (TypeError, ValueError):
+            continue
+        if len(out) >= limit:
+            break
+    return out
 
 
 def reset():

@@ -8,6 +8,7 @@ import xbmc
 import xbmcaddon
 
 from resources.lib.auth import get_anilist_token, has_anilist_token
+from resources.lib import watched
 from resources.lib.cache import ApiCache, get_api_cache
 from resources.lib.constants import ANILIST_API
 
@@ -749,16 +750,37 @@ class AniListClient:
         return entries
 
     def next_up(self):
-        entries = self._list_entries("CURRENT", ["UPDATED_TIME_DESC"])
-        items = []
-        for entry in entries:
-            media = entry.get("media")
+        """Continue Watching: AniList CURRENT (when logged in) + locally-in-progress
+        shows from the watched store, so the row works without an AniList login."""
+        items, seen = [], set()
+        if self.has_token():
+            for entry in self._list_entries("CURRENT", ["UPDATED_TIME_DESC"]):
+                media = entry.get("media")
+                if not media or not media.get("idMal"):
+                    continue
+                total = media.get("episodes") or 0
+                prog = entry.get("progress") or 0
+                if total and prog >= total:
+                    continue
+                media["_progress"] = prog
+                items.append(media)
+                seen.add(int(media["idMal"]))
+        for mal_id in watched.recent_mal_ids():
+            if mal_id in seen:
+                continue
+            eps = watched.watched_episodes(mal_id)
+            if not eps:
+                continue
+            media = self.get_media(mal_id=mal_id)
             if not media or not media.get("idMal"):
                 continue
-            if (entry.get("progress") or 0) >= (media.get("episodes") or 0) and media.get("episodes"):
+            total = media.get("episodes") or 0
+            prog = max(eps)
+            if total and prog >= total:
                 continue
-            media["_progress"] = entry.get("progress") or 0
+            media["_progress"] = prog
             items.append(media)
+            seen.add(mal_id)
         return items
 
     def watchlist(self, page=1, per_page=50):
@@ -953,10 +975,11 @@ class AniListClient:
             """,
             {"mediaId": media_id, "progress": progress, "status": status},
         )
-        ok = bool((data or {}).get("SaveMediaListEntry"))
-        if ok:
-            clear_all_caches(expired_only=False)
-        return ok, "progress"
+        # Deliberately NOT busting the 1-hour API cache here: progress updates fire on
+        # every episode play, and nuking the cache each time made the whole UI re-fetch
+        # constantly. The local watched store (watched.py) gives immediate watched/
+        # continue-watching feedback; AniList-side reads catch up within the TTL.
+        return bool((data or {}).get("SaveMediaListEntry")), "progress"
 
     def random_pick(self, variables, trending=False, pool_size=25):
         variables = dict(variables)
