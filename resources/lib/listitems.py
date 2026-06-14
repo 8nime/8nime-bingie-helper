@@ -357,6 +357,8 @@ def build_episode_item(
     ep_aired=None,
     play_episode=None,
     watched=False,
+    resume_pos=0,
+    resume_dur=0,
 ):
     season = int(season or 1)
     episode = int(episode or 1)
@@ -399,6 +401,23 @@ def build_episode_item(
         # chronologically. TMDB hands us YYYY-MM-DD; Kodi wants a datetime.
         info["dateadded"] = "%s 00:00:00" % ep_aired
     li.setInfo("video", info)
+    # In-progress resume point -> drives the skin's PARTIAL red progress bar. The
+    # Bingie episode views (View_525/View_527) render the real bar from
+    # ListItem.PercentPlayed (width = pos/dur) when ListItem.IsResumable is true,
+    # and a full "fake" bar when PlayCount>0 AND NOT IsResumable. So: a partway
+    # episode gets a resume point (partial bar, playcount stays 0), a completed
+    # episode gets playcount=1 and no resume point (full bar), and an unwatched
+    # episode gets neither (no bar). pos/dur come from the local resume.json store.
+    try:
+        rpos = float(resume_pos or 0)
+        rdur = float(resume_dur or 0)
+    except (TypeError, ValueError):
+        rpos = rdur = 0.0
+    if 0 < rpos < rdur:
+        try:
+            li.getVideoInfoTag().setResumePoint(rpos, rdur)
+        except Exception:
+            pass
     if not art:
         art = _episode_art_from_media(media, episode, thumb_url=thumb_url) if media else {}
         if not art and thumb_url:

@@ -34,11 +34,8 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset_addon_settings(tmp_path):
-    """Isolate per-addon stub settings + the local watched store between tests."""
+    """Isolate per-addon stub settings + the local progress/resume stores between tests."""
     _xbmcaddon.reset()
-    from resources.lib import watched as _watched
-    _watched.reset()
-    _watched._store_path = lambda: os.path.join(str(tmp_path), "watched.json")
     from resources.lib import resume as _resume
     _resume.reset()
     _resume._store_path = lambda: os.path.join(str(tmp_path), "resume.json")
@@ -54,7 +51,6 @@ def _reset_addon_settings(tmp_path):
     _wnt2._episode_list_cache_path = lambda: os.path.join(str(tmp_path), "wnt2_episodes.json")
     yield
     _xbmcaddon.reset()
-    _watched.reset()
     _resume.reset()
     _progress.reset()
     _wnt2.reset_series_cache()

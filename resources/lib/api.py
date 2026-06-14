@@ -8,7 +8,7 @@ import xbmc
 import xbmcaddon
 
 from resources.lib.auth import get_anilist_token, has_anilist_token
-from resources.lib import watched, resume, progress as progress_store
+from resources.lib import resume, progress as progress_store
 from resources.lib.cache import ApiCache, get_api_cache
 from resources.lib.constants import ANILIST_API
 
@@ -848,8 +848,7 @@ class AniListClient:
         """Continue Watching, all local (no network beyond cached media resolves):
           1) in-progress entries from the unified progress store (AniList progress
              synced at boot + local completions, keyed by AniList id),
-          2) pre-migration local-watched history (legacy mal-keyed store),
-          3) mid-episode resume points (started, no episode finished yet).
+          2) mid-episode resume points (started, no episode finished yet).
         Deduped by mal_id, recency-ordered, caught-up shows dropped."""
         items, seen = [], set()
 
@@ -872,12 +871,6 @@ class AniListClient:
             mal = doc.get("mal_id")
             media = self.get_media(mal_id=mal) if mal else self.get_media(anilist_id=anilist_id)
             _add(media, prog)
-        for mal_id in watched.recent_mal_ids():
-            if mal_id in seen:
-                continue
-            eps = watched.watched_episodes(mal_id)
-            if eps:
-                _add(self.get_media(mal_id=mal_id), max(eps))
         for mal_id in resume.recent_mal_ids():
             if mal_id in seen:
                 continue
@@ -1049,7 +1042,7 @@ class AniListClient:
     def update_progress(self, media_id, progress):
         """Advance AniList watched progress to `progress` (never regresses).
 
-        Called when an episode is played (alongside the always-on local watched
+        Called when an episode is played (alongside the always-on local progress
         store). Marks the entry CURRENT, or COMPLETED once the final episode is
         reached; an existing COMPLETED is preserved. Guarded so re-watching an older
         episode never rolls progress back. Returns (ok, status)."""
@@ -1084,7 +1077,7 @@ class AniListClient:
         )
         # Deliberately NOT busting the 1-hour API cache here: progress updates fire on
         # every episode play, and nuking the cache each time made the whole UI re-fetch
-        # constantly. The local watched store (watched.py) gives immediate watched/
+        # constantly. The local progress store (progress.py) gives immediate watched/
         # continue-watching feedback; AniList-side reads catch up within the TTL.
         return bool((data or {}).get("SaveMediaListEntry")), "progress"
 

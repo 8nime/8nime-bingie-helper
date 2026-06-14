@@ -8,7 +8,7 @@ import xbmcplugin
 from resources.lib.info_routes import InfoHandler
 import resources.lib.info_routes as info_routes
 import resources.lib.season_map as season_map
-from resources.lib import progress, watched
+from resources.lib import progress, resume
 
 
 def _reset_season_map():
@@ -256,6 +256,58 @@ class TestUpcomingEntry:
         assert all("Premieres" not in c[1].label for c in captured)
 
 
+class TestEpisodeProgressBar:
+    """The episode-thumbnail progress bar reflects the ACTUAL watched fraction:
+    a partial Kodi resume point for the in-progress episode (drives the skin's
+    PercentPlayed bar), playcount for completed episodes (the skin's full bar), and
+    neither for unwatched episodes."""
+
+    def _by_episode(self, captured):
+        out = {}
+        for _url, li, _folder in captured:
+            for part in (li.getPath() or "").split("&"):
+                if part.startswith("episode="):
+                    out[int(part.split("=")[1])] = li
+        return out
+
+    def _run(self, monkeypatch, captured, media):
+        h = InfoHandler(1, {"info": "episodes", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: [])
+        monkeypatch.setattr("resources.lib.tmdb.episode_stills", lambda *a, **k: {})
+        h.episodes()
+        return self._by_episode(captured)
+
+    def test_in_progress_episode_gets_partial_resume_point(self, monkeypatch, captured):
+        resume.set_point(40748, 3, 600, 1440)  # stopped 10 min into a 24 min episode
+        items = self._run(monkeypatch, captured, _media())
+        tag = items[3].getVideoInfoTag()
+        assert tag.getResumeTime() == 600
+        assert tag.getResumeTimeTotal() == 1440
+        assert items[3]._info["video"]["playcount"] == 0
+
+    def test_completed_episode_full_bar_no_resume(self, monkeypatch, captured):
+        progress.apply_anilist(101922, 40748, 2, total=26)  # eps 1-2 completed
+        items = self._run(monkeypatch, captured, _media())
+        assert items[1]._info["video"]["playcount"] == 1
+        assert items[1].getVideoInfoTag().getResumeTime() == 0
+
+    def test_unwatched_episode_has_no_bar(self, monkeypatch, captured):
+        items = self._run(monkeypatch, captured, _media())
+        assert items[5]._info["video"]["playcount"] == 0
+        assert items[5].getVideoInfoTag().getResumeTime() == 0
+
+    def test_resume_point_overrides_stale_watched_mark(self, monkeypatch, captured):
+        # A live, unfinished resume point is authoritative: even if the episode-level
+        # progress (e.g. AniList sync) counts ep2 as watched, a partway position wins
+        # -> partial bar, not the full "completed" bar (the Re:Zero S4E5 case).
+        resume.set_point(40748, 2, 600, 1440)
+        progress.apply_anilist(101922, 40748, 2, total=26)
+        items = self._run(monkeypatch, captured, _media())
+        assert items[2]._info["video"]["playcount"] == 0
+        assert items[2].getVideoInfoTag().getResumeTime() == 600
+
+
 class TestSortOrder:
     """The `sort_order` setting flips the display order of the seasons list and the
     episode lists; default is newest-first (desc)."""
@@ -447,10 +499,11 @@ class TestTraktUpNext:
         h.trakt_upnext()
         assert "episode=7" in captured[0][1].getPath()
 
-    def test_local_watched_resumes_without_anilist(self, monkeypatch, captured):
-        # No AniList progress (local-only, legacy mal-keyed store has ep 3) -> the Play
-        # button resumes at ep 4 instead of dead-ending on ep 1.
-        watched.mark_watched(40748, 3)
+    def test_local_completion_resumes_without_anilist_login(self, monkeypatch, captured):
+        # No AniList login, but local completions still land in the progress store
+        # (keyed by the media's AniList id, present even without login) -> Play resumes
+        # ep 4 instead of dead-ending on ep 1.
+        progress.mark_watched(101922, 40748, 3)
         media = _media()
         h = InfoHandler(1, {"info": "trakt_upnext", "mal_id": "40748"})
         h.client = FakeClient(media)
@@ -458,9 +511,10 @@ class TestTraktUpNext:
         h.trakt_upnext()
         assert "episode=4" in captured[0][1].getPath()
 
-    def test_uses_higher_of_local_and_anilist(self, monkeypatch, captured):
-        # legacy local store says ep 2, synced AniList says 5 -> resume the higher (6).
-        watched.mark_watched(40748, 2)
+    def test_progress_store_never_regresses(self, monkeypatch, captured):
+        # A local completion (ep 2) then a higher AniList sync (5) -> the store keeps the
+        # max, so Play resumes ep 6 (progress never rolls back).
+        progress.mark_watched(101922, 40748, 2)
         progress.apply_anilist(101922, 40748, 5, total=26)
         media = _media()
         h = InfoHandler(1, {"info": "trakt_upnext", "mal_id": "40748"})
@@ -468,6 +522,34 @@ class TestTraktUpNext:
         monkeypatch.setattr(h, "_franchise", lambda m=None: [])
         h.trakt_upnext()
         assert "episode=6" in captured[0][1].getPath()
+
+    def test_resume_point_targets_in_progress_episode_not_next(self, monkeypatch, captured):
+        # ep5 counts as watched at the episode level (AniList progress 5) but has a live
+        # partway resume point -> Play resumes ep5, not ep6, and the item is resumable
+        # so the skin renders "Resume 5" instead of "Play 6".
+        progress.apply_anilist(101922, 40748, 5, total=26)
+        resume.set_point(40748, 5, 600, 1440)
+        media = _media()
+        h = InfoHandler(1, {"info": "trakt_upnext", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: [])
+        h.trakt_upnext()
+        li = captured[0][1]
+        assert "episode=5" in li.getPath()
+        assert li.getVideoInfoTag().getResumeTime() == 600  # IsResumable -> "Resume"
+
+    def test_no_resume_point_targets_next_and_not_resumable(self, monkeypatch, captured):
+        # Without a resume point the Play button advances normally and is NOT resumable
+        # (skin shows "Play N").
+        progress.apply_anilist(101922, 40748, 5, total=26)
+        media = _media()
+        h = InfoHandler(1, {"info": "trakt_upnext", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: [])
+        h.trakt_upnext()
+        li = captured[0][1]
+        assert "episode=6" in li.getPath()
+        assert li.getVideoInfoTag().getResumeTime() == 0
 
     def test_franchise_advances_past_finished_season(self, monkeypatch, captured):
         # S1 fully aired (26 eps) + fully watched -> advance to S2; S2 has 11 eps,

@@ -7,7 +7,7 @@ short play session ending at a chosen position.
 """
 import xbmc
 
-from resources.lib import resume, watched
+from resources.lib import resume, progress
 
 
 class TestDecisionHelpers:
@@ -67,19 +67,19 @@ class TestBabysit:
         # Playback ends at 200s of a 1400s episode -> a resume point is stored and the
         # episode is NOT marked watched (completion-based: only ~90% counts).
         xbmc._set_playback([(100, 1400), (200, 1400)])
-        resume.babysit("40748", 5)
+        resume.babysit("40748", 5, aid=101922)
         point = resume.get(40748)
         assert point["ep"] == 5
         assert point["pos"] == 200
-        assert 5 not in watched.watched_episodes(40748)
+        assert progress.is_watched(101922, 5) is False
 
     def test_finished_episode_marks_watched_and_clears_point(self):
         # Pre-existing resume point; this play runs to ~the end -> watched + cleared.
         resume.set_point(40748, 5, 200.0, 1400.0)
         xbmc._set_playback([(1300, 1400), (1390, 1400)])
-        resume.babysit("40748", 5)
+        resume.babysit("40748", 5, aid=101922)
         assert resume.get(40748) is None
-        assert 5 in watched.watched_episodes(40748)
+        assert progress.is_watched(101922, 5) is True
 
     def test_seeks_to_saved_position_for_same_episode(self):
         resume.set_point(40748, 5, 742.0, 1400.0)

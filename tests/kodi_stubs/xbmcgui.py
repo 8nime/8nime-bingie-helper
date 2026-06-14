@@ -103,6 +103,28 @@ class Dialog:
         return 0
 
 
+class VideoInfoTag:
+    """Minimal stand-in for xbmc.InfoTagVideo (the bits the helper sets/reads).
+
+    Real Kodi exposes setResumePoint / getResumeTime / getResumeTimeTotal (v20+);
+    mirror them so tests can assert the resume point that drives the skin's partial
+    progress bar (ListItem.PercentPlayed / IsResumable)."""
+
+    def __init__(self):
+        self._resume_time = 0.0
+        self._resume_total = 0.0
+
+    def setResumePoint(self, time, totalTime=0.0):
+        self._resume_time = float(time)
+        self._resume_total = float(totalTime)
+
+    def getResumeTime(self):
+        return self._resume_time
+
+    def getResumeTimeTotal(self):
+        return self._resume_total
+
+
 class ListItem:
     def __init__(self, label="", label2="", path=""):
         self.label = label
@@ -112,6 +134,7 @@ class ListItem:
         self._info = {}
         self._properties = {}
         self._unique_ids = {}
+        self._video_tag = None
 
     def setLabel(self, label):
         self.label = label
@@ -126,7 +149,9 @@ class ListItem:
         self._info.setdefault(media_type, {}).update(info_dict)
 
     def getVideoInfoTag(self):
-        return self._info.get("video", {})
+        if self._video_tag is None:
+            self._video_tag = VideoInfoTag()
+        return self._video_tag
 
     def setProperty(self, key, value):
         self._properties[key] = str(value)

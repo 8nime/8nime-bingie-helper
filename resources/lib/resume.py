@@ -25,7 +25,7 @@ import time
 import xbmc
 import xbmcvfs
 
-from resources.lib import watched, progress
+from resources.lib import progress
 from resources.lib.constants import ADDON_ID
 
 # Don't offer a resume below this many seconds in -- starting over is fine.
@@ -185,20 +185,19 @@ def _read_session():
 def _mark_finished(mal_id, episode, aid):
     """Completion: record the episode in the unified O(1) progress store + advance
     AniList. Runs only at ~90% playback (completion-based, not optimistic). ``aid`` is
-    the AniList media id passed via RunScript -- it's the store key. Falls back to the
-    legacy mal-keyed watched store only when there's no AniList id."""
-    if aid:
-        try:
-            progress.mark_watched(int(aid), mal_id, episode)
-        except Exception:
-            pass
-        try:
-            from resources.lib.api import AniListClient
-            AniListClient().update_progress(int(aid), episode)
-        except Exception:
-            pass
-    else:
-        watched.mark_watched(mal_id, episode)
+    the AniList media id passed via RunScript -- it's the store key, so without it there
+    is nothing to record against (every real media item carries an AniList id)."""
+    if not aid:
+        return
+    try:
+        progress.mark_watched(int(aid), mal_id, episode)
+    except Exception:
+        pass
+    try:
+        from resources.lib.api import AniListClient
+        AniListClient().update_progress(int(aid), episode)
+    except Exception:
+        pass
 
 
 def babysit(mal_id, episode, aid=None):

@@ -7,7 +7,7 @@ import xbmcaddon
 import xbmcgui
 import xbmcplugin
 
-from resources.lib import watched, resume, progress, debuglog
+from resources.lib import resume, progress, debuglog
 from resources.lib.api import AniListClient, media_type_from_tmdb
 from resources.lib.constants import ADDON_ID, PLUGIN_URL
 from resources.lib.episodes import (
@@ -367,15 +367,18 @@ class InfoHandler:
         if not is_split and season_total:
             total_eps = int(season_total)
         # Watched state from the unified O(1) store (AniList progress synced at boot +
-        # local completion marks), keyed by AniList id -- no network here. The legacy
-        # mal-keyed watched store is unioned in for pre-migration history. Episodes use
-        # the PLAY numbering (cour-local, or absolute for a monolith).
+        # local completion marks), keyed by AniList id -- no network here. An episode
+        # is watched when it's contiguous up to `progress` OR an explicit local mark.
+        # Episodes use the PLAY numbering (cour-local, or absolute for a monolith).
         aid = media.get("id")
-        watched_eps = set(watched.watched_episodes(mal_id))
         prog = progress.progress_of(aid)
-        if prog:
-            watched_eps = watched_eps | set(range(1, prog + 1))
-        watched_eps = watched_eps | progress.watched_set(aid)
+        watched_eps = set(range(1, prog + 1)) if prog else set()
+        watched_eps |= progress.watched_set(aid)
+        # Local in-episode resume point (one in-progress episode per show, by mal_id)
+        # so the in-progress episode renders a PARTIAL progress bar (pos/dur) instead
+        # of a full one. Keyed/numbered by PLAY episode -- the same number babysit()
+        # records -- so it lines up with play_episode below.
+        resume_pt = resume.get(mal_id)
         items = []
         for ep in range(1, last + 1):
             if is_split:
@@ -397,6 +400,18 @@ class InfoHandler:
             # restart at 1. play_episode stays cour-local so playback still resolves
             # the right backend episode; split arcs keep their season-local display.
             display_ep = ep if is_split else (int(display_offset) + ep)
+            is_watched = play_episode in watched_eps
+            # Partial-bar resume point. A live, unfinished local resume point is
+            # AUTHORITATIVE: it wins over a coarse episode-level "watched" mark (which
+            # may be stale -- e.g. AniList progress that counts a half-watched episode
+            # as done), so re-watching a "completed" episode shows the real fraction
+            # rather than a full bar.
+            resume_pos = resume_dur = 0
+            if (resume_pt and int(resume_pt.get("ep") or 0) == play_episode
+                    and resume.should_resume(resume_pt.get("pos"), resume_pt.get("dur"))):
+                resume_pos = resume_pt.get("pos") or 0
+                resume_dur = resume_pt.get("dur") or 0
+                is_watched = False  # partway, not done -> partial bar, no full bar
             items.append(
                 build_episode_item(
                     mal_id,
@@ -411,7 +426,9 @@ class InfoHandler:
                     ep_plot=meta.get("plot"),
                     ep_aired=meta.get("aired"),
                     play_episode=play_episode,
-                    watched=(play_episode in watched_eps),
+                    watched=is_watched,
+                    resume_pos=resume_pos,
+                    resume_dur=resume_dur,
                 )
             )
         return items
@@ -742,8 +759,8 @@ class InfoHandler:
     def _resume_episode(self, mal_id, media):
         """Resume-aware next episode for one (cour) mal_id + its media.
 
-        Combines the local watched store with AniList progress (the higher of the
-        two, so local-only users resume too) and clamps to what has actually been
+        Reads the unified progress store (AniList progress synced at boot + local
+        completion marks, keyed by AniList id) and clamps to what has actually been
         released:
           - nothing watched                 -> episode 1
           - released episodes still unwatched -> last-watched + 1
@@ -754,14 +771,10 @@ class InfoHandler:
         it). ``progress`` is the resolved watched count (0 = untouched) so callers can
         tell "in progress here" from "never started" without recomputing.
 
-        Pure O(1) local lookup -- reads the unified progress store (AniList progress
-        synced at boot + local completion marks, keyed by AniList id) plus the legacy
-        mal-keyed watched store. No network on this path.
+        Pure O(1) local lookup -- no network on this path.
         """
         aid = media.get("id")
-        legacy = watched.watched_episodes(mal_id)
-        legacy_progress = max(legacy) if legacy else 0
-        prog = max(legacy_progress, progress.progress_of(aid))
+        prog = progress.progress_of(aid)
         next_air = int((media.get("nextAiringEpisode") or {}).get("episode") or 0)
         total = int(media.get("episodes") or 0)
         last_released = (next_air - 1) if next_air else total
@@ -774,7 +787,25 @@ class InfoHandler:
             episode, fully_done = last_released, not next_air
         else:
             episode, fully_done = prog + 1, False
+        # A live, unfinished resume point is authoritative: resume THAT episode rather
+        # than advancing to the next one (so a half-watched episode the progress store
+        # already counts as done still resumes, and the Play button reads "Resume N"
+        # via the skin's IsResumable variable). Never "done" while mid-episode.
+        point = resume.get(mal_id)
+        if point and resume.should_resume(point.get("pos"), point.get("dur")):
+            episode, fully_done = int(point.get("ep") or episode), False
         return episode, fully_done, prog
+
+    def _upnext_item(self, mal_id, episode, title, total, **kwargs):
+        """Build the Play-button (next-up) listitem, attaching the local resume point
+        when `episode` is the in-progress one. That sets ListItem.IsResumable, which the
+        skin's PlayOrResume label reads to show "Resume N" instead of "Play N"."""
+        point = resume.get(mal_id)
+        if (point and int(point.get("ep") or 0) == int(episode)
+                and resume.should_resume(point.get("pos"), point.get("dur"))):
+            kwargs["resume_pos"] = point.get("pos") or 0
+            kwargs["resume_dur"] = point.get("dur") or 0
+        return build_episode_item(mal_id, episode, title, total, **kwargs)
 
     def trakt_upnext(self):
         debuglog.dbg("trakt_upnext PARAMS=%s" % dict(self.params))
@@ -793,7 +824,7 @@ class InfoHandler:
         # sequential network) just to populate the Play button.
         viewed_ep, viewed_done, viewed_prog = self._resume_episode(mal_id, media)
         if viewed_prog > 0 and not viewed_done:
-            li = build_episode_item(mal_id, viewed_ep, _title(media), self._episode_total(media))
+            li = self._upnext_item(mal_id, viewed_ep, _title(media), self._episode_total(media))
             return self._finish([li] if li else [], "episodes")
 
         # MONOLITH (One Piece etc.): one AniList entry, absolute episodes, no real
@@ -802,7 +833,7 @@ class InfoHandler:
         # the Play button).
         if self._is_monolith(media):
             debuglog.dbg("trakt_upnext MONOLITH short-circuit mal=%s ep=%s" % (mal_id, viewed_ep))
-            li = build_episode_item(mal_id, viewed_ep, _title(media), self._episode_total(media))
+            li = self._upnext_item(mal_id, viewed_ep, _title(media), self._episode_total(media))
             return self._finish([li] if li else [], "episodes")
 
         # The viewed cour is untouched (a sibling season may be the one in progress)
@@ -831,7 +862,7 @@ class InfoHandler:
                 cour, ep = (cours[0] if cours else None), 1
             if cour is not None:
                 cour_media = cour.get("media") or {}
-                li = build_episode_item(
+                li = self._upnext_item(
                     cour.get("mal_id"), ep, show_title, self._episode_total(cour_media),
                     season=cour.get("season") or 1, play_title=_title(cour_media),
                 )
@@ -839,7 +870,7 @@ class InfoHandler:
 
         # Non-franchise: resume the viewed title (ep 1 when nothing is watched).
         total = media.get("episodes") or viewed_ep
-        li = build_episode_item(mal_id, viewed_ep, show_title, total)
+        li = self._upnext_item(mal_id, viewed_ep, show_title, total)
         return self._finish([li] if li else [], "episodes")
 
     def _record_watched(self, mal_id, media, episode, is_movie):
