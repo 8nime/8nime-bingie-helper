@@ -1,6 +1,6 @@
 <?xml version="1.0.0" encoding="UTF-8"?>
 <addon id="plugin.video.8nime.bingie.helper"
-       version="1.10.0"
+       version="1.11.0"
        name="8nime Bingie Helper"
        provider-name="8nime">
   <requires>
