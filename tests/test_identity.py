@@ -111,6 +111,16 @@ class TestReverse:
         ]})
         assert identity.reverse_ids(12345) == {"anilist": 16498, "mal": 16498}
 
+    def test_out_of_range_season_picks_nearest_not_lowest(self):
+        # Requested season 4 doesn't exist (only 1, 2). Must resolve to the NEAREST
+        # cour (season 2), NOT silently to season 1 -- which would favourite/play the
+        # wrong cour. R2-3.
+        _reset_map(tvdb_members={"76669": [
+            [16498, 16498, 1, 1, 12345, 1],
+            [20958, 20958, 2, 1, 12345, 2],
+        ]})
+        assert identity.reverse_ids(12345, season=4) == {"anilist": 20958, "mal": 20958}
+
     def test_unknown_tmdb_returns_none(self):
         _reset_map(tvdb_members={})
         assert identity.reverse_ids(99999) is None

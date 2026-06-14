@@ -53,6 +53,15 @@ class TestApplyAniList:
         progress.mark_watched(7, 7, 9)
         assert progress.progress_of(7) == 9
 
+    def test_replace_all_preserves_known_mal_id_on_null_sync(self):
+        # A lean sync returning idMal=null must not wipe a previously-known mal_id. R2-6.
+        progress.mark_watched(101922, 40748, 3)  # local mark records mal_id 40748
+        progress.replace_all({101922: {"mal_id": None, "total": 26, "progress": 5,
+                                       "watched": {}, "ts": 9.0}})
+        doc = progress.get(101922)
+        assert doc["mal_id"] == 40748  # preserved, not None
+        assert doc["progress"] == 5    # synced value applied
+
 
 class TestRecency:
     def test_recent_orders_by_ts_and_skips_zero_progress(self):

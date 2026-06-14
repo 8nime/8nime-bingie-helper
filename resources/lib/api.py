@@ -561,7 +561,12 @@ class AniListClient:
                         parsed = None
                     if isinstance(parsed, dict) and "data" in parsed:
                         result = parsed.get("data")
-                        if use_cache and result is not None:
+                        # Only negative-cache the queries that LEGITIMATELY 404 (the
+                        # per-user MediaList/MediaListCollection "no entry" case). A
+                        # transient 404 on a Media detail/batch query must NOT be cached
+                        # -- that would dead-click the title for the full TTL with no
+                        # self-heal -- so return its data but skip the cache.
+                        if use_cache and result is not None and "MediaList" in query:
                             _CACHE.set(query, variables, result)
                         return result
                 if resp.status_code >= 400:

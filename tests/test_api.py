@@ -498,6 +498,33 @@ class TestAniListClientPost404:
         # _post swallows the raised HTTPError and returns None (stale cache empty).
         assert result is None
 
+    def test_404_on_media_query_returns_data_but_not_cached(self, client):
+        # R2-5: a transient 404 on a Media query degrades gracefully but must NOT be
+        # negative-cached, or the title would dead-click for the full TTL.
+        resp = _mock_response({"data": {"Media": None}}, status_code=404)
+        resp.json.return_value = {"data": {"Media": None}}
+        client._session.post.return_value = resp
+        cache = MagicMock()
+        cache.get.return_value = None
+        cache.get_stale.return_value = None
+        with patch("resources.lib.api._CACHE", cache):
+            result = client._post("query { Media(id: 1) { id } }", {"id": 1})
+        assert result == {"Media": None}
+        cache.set.assert_not_called()
+
+    def test_404_on_medialist_query_is_cached(self, client):
+        # The legitimate "no list entry" 404 IS cached (a mutation busts it).
+        resp = _mock_response({"data": {"MediaList": None}}, status_code=404)
+        resp.json.return_value = {"data": {"MediaList": None}}
+        client._session.post.return_value = resp
+        cache = MagicMock()
+        cache.get.return_value = None
+        cache.get_stale.return_value = None
+        with patch("resources.lib.api._CACHE", cache):
+            result = client._post("query { MediaList(userId: 1, mediaId: 1) { progress } }", {})
+        assert result == {"MediaList": None}
+        cache.set.assert_called_once()
+
 
 class TestPlanningEntryId:
     def test_returns_entry_id_when_in_planning(self, client):

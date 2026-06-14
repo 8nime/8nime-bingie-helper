@@ -70,6 +70,10 @@ _ADDON = xbmcaddon.Addon()
 # a single cour. Only used to bound the episode list when nothing better is known.
 _FALLBACK_EPISODES_RELEASING = 24
 _FALLBACK_EPISODES_DEFAULT = 12
+# Hard cap on how many episode items one list can build, so a garbage/poisoned AniList
+# `episodes` count (or a bad cache entry) can't hang the UI allocating millions of
+# items. Far above any real show (One Piece ~1100, handled via the TMDB split anyway).
+_MAX_EPISODES = 5000
 
 
 def _sort_descending():
@@ -287,7 +291,7 @@ class InfoHandler:
     def _episode_total(self, media):
         total = media.get("episodes")
         if total:
-            return int(total)
+            return min(int(total), _MAX_EPISODES)
         status = (media.get("status") or "").upper()
         next_ep = int((media.get("nextAiringEpisode") or {}).get("episode") or 0)
         if next_ep:
@@ -336,6 +340,7 @@ class InfoHandler:
             # 1..episode_count, capped to whatever of the absolute run has aired
             # past this season's offset.
             last = max(0, min(int(episode_count), last - int(play_offset)))
+        last = min(last, _MAX_EPISODES)  # never build an absurd number of items
         if last < 1:
             return []
 
@@ -514,11 +519,19 @@ class InfoHandler:
             for group in franchise
             for c in group.get("cours") or []
         )
+        # Prefer the summed TMDB per-season counts, but ONLY when every group maps to a
+        # DISTINCT (tmdb_id, tmdb_season). Fribb records the same tmdb_season (usually 1)
+        # for every cour of franchises TMDB lumps into one season (Re:Zero: 3 cours all
+        # tmdb_season=1), so summing would triple-count the same 85 -> 255. On any
+        # duplicate, fall back to the AniList per-cour sum.
         tmdb_total = 0
+        seen = set()
         for group in franchise:
-            if not group.get("tmdb_id") or not group.get("tmdb_season"):
+            key = (group.get("tmdb_id"), group.get("tmdb_season"))
+            if not group.get("tmdb_id") or not group.get("tmdb_season") or key in seen:
                 tmdb_total = 0
                 break
+            seen.add(key)
             count = self._tmdb_season_count(group)
             if not count:
                 tmdb_total = 0
@@ -643,10 +656,18 @@ class InfoHandler:
         offsets, suppressed = self._stream_plan(franchise)
         tmdb_offsets = self._tmdb_offsets(franchise)
         items = []
-        for cour in iter_cours(franchise):
-            cour_media = cour.get("media") or media
-            items.extend(
-                self._build_episode_list(
+        for group in franchise:
+            cours = group.get("cours") or []
+            # Continuous display numbering across the cours of ONE season (AoT S4 Part 1
+            # -> 1..16, Part 2 -> 17..28), reset at each season boundary -- otherwise both
+            # cours restart at 1 with the same season and the force-sorted episodes view
+            # interleaves/duplicates them. Mirrors episodes(); split cours ignore the
+            # display_offset (they keep their season-local number).
+            season_total = sum(self._episode_total(c.get("media") or {}) for c in cours) or None
+            display_offset = 0
+            for cour in cours:
+                cour_media = cour.get("media") or media
+                cour_items = self._build_episode_list(
                     cour_media,
                     mal_id=cour.get("mal_id") or cour_media.get("idMal"),
                     season=cour.get("season"),
@@ -658,8 +679,11 @@ class InfoHandler:
                     episode_count=cour.get("_episode_count"),
                     play_offset=cour.get("_play_offset", 0),
                     tmdb_offset=tmdb_offsets.get(id(cour), 0),
+                    display_offset=display_offset,
+                    season_total=season_total,
                 )
-            )
+                items.extend(cour_items)
+                display_offset += len(cour_items)
         return self._finish(_ordered(items), "episodes")
 
     def seasons(self):

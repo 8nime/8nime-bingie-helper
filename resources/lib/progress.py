@@ -188,6 +188,9 @@ def replace_all(docs):
         existing = data.get(skey)
         if existing:
             incoming = dict(incoming)
+            # Don't let a sync with idMal=null wipe a previously-known mal_id (the
+            # next_up tier-1 cache path keys on it); keep the incoming one if present.
+            incoming["mal_id"] = incoming.get("mal_id") or existing.get("mal_id")
             incoming["progress"] = max(int(existing.get("progress") or 0), int(incoming.get("progress") or 0))
             # Keep the higher known episode count: a lean re-sync can return total=0
             # for an ongoing show, which must not regress a previously-known count

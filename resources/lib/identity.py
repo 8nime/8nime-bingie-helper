@@ -107,7 +107,10 @@ def reverse_ids(tmdb_id, season=None):
 
 
 def _pick_member(members, season):
-    """Pick the franchise cour matching season, else the base/lowest-season cour."""
+    """Pick the franchise cour matching season; with no season requested, the base
+    (lowest) cour. When a specific season IS requested but not present, fall back to the
+    NEAREST season -- not the lowest: silently resolving a requested S4 to S1 would
+    favourite/score/play the wrong cour (an axis mismatch or a not-yet-mapped cour)."""
     if season is not None and _intable(season):
         want = int(season)
         for member in members:
@@ -116,6 +119,7 @@ def _pick_member(members, season):
         for member in members:
             if member.get("season") == want:
                 return member
+        return min(members, key=lambda m: (abs((m.get("season") or 1) - want), m.get("season") or 1))
     return min(members, key=lambda m: (m.get("season") or 1))
 
 

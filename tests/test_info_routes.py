@@ -249,6 +249,87 @@ class TestUpcomingEntry:
         assert all("Premieres" not in c[1].label for c in captured)
 
 
+class TestFranchiseTotals:
+    """TotalEpisodes in the detail header (R2-1)."""
+
+    def _shared_tmdb_franchise(self, media):
+        # Re:Zero shape: TMDB lumps all cours into ONE season, so Fribb gives every
+        # group the same (tmdb_id, tmdb_season).
+        s2 = {"idMal": 99999, "id": 2, "episodes": 11, "title": {"english": "S2"}}
+        return [
+            {"season": 1, "mal_id": 40748, "media": media, "cours": [{"media": media}],
+             "tmdb_id": 82684, "tmdb_season": 1},
+            {"season": 2, "mal_id": 99999, "media": s2, "cours": [{"media": s2}],
+             "tmdb_id": 82684, "tmdb_season": 1},
+        ]
+
+    def test_shared_tmdb_season_not_triple_counted(self, monkeypatch, captured):
+        media = _media()  # 26 eps
+        h = InfoHandler(1, {"info": "details", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr("resources.lib.info_routes.franchise_show_title", lambda f, t: "X")
+        monkeypatch.setattr(h, "_franchise", lambda m=None: self._shared_tmdb_franchise(media))
+        monkeypatch.setattr(h, "_tmdb_season_count", lambda group: 85)  # same for both
+        h.details()
+        # Duplicate (tmdb_id, tmdb_season) -> fall back to AniList per-cour sum (26+11),
+        # NOT 85+85=170.
+        assert captured[0][1].getProperty("TotalEpisodes") == "37"
+
+    def test_distinct_tmdb_seasons_use_tmdb_sum(self, monkeypatch, captured):
+        media = _media()
+        franchise = self._shared_tmdb_franchise(media)
+        franchise[1]["tmdb_season"] = 2  # now distinct seasons
+        h = InfoHandler(1, {"info": "details", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr("resources.lib.info_routes.franchise_show_title", lambda f, t: "X")
+        monkeypatch.setattr(h, "_franchise", lambda m=None: franchise)
+        monkeypatch.setattr(h, "_tmdb_season_count", lambda group: 12)
+        h.details()
+        assert captured[0][1].getProperty("TotalEpisodes") == "24"  # 12 + 12, TMDB sum
+
+
+class TestEpisodeCountClamp:
+    """R2-7: never build an absurd number of episode items."""
+
+    def test_episode_total_clamped(self, monkeypatch):
+        h = InfoHandler(1, {"info": "episodes", "mal_id": "1"})
+        assert h._episode_total({"episodes": 100000000}) == info_routes._MAX_EPISODES
+
+    def test_episode_list_bounded(self, monkeypatch, captured):
+        media = _media()
+        media["episodes"] = 100000000
+        media.pop("nextAiringEpisode", None)  # all "aired"
+        h = InfoHandler(1, {"info": "episodes", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: [])
+        monkeypatch.setattr("resources.lib.tmdb.episode_stills", lambda *a, **k: {})
+        h.episodes()
+        assert len(captured) == info_routes._MAX_EPISODES
+
+
+class TestFlatSeasonsNumbering:
+    """R2-2: cours of one season display continuously, not restarting at 1."""
+
+    def test_continuous_numbering_across_cours(self, monkeypatch, captured):
+        c1 = {"idMal": 111, "id": 111, "episodes": 2, "title": {"english": "P1"}}
+        c2 = {"idMal": 222, "id": 222, "episodes": 2, "title": {"english": "P2"}}
+        franchise = [{
+            "season": 4, "mal_id": 111, "media": c1, "tmdb_id": None, "tmdb_season": None,
+            "cours": [{"media": c1, "mal_id": 111, "season": 4},
+                      {"media": c2, "mal_id": 222, "season": 4}],
+        }]
+        h = InfoHandler(1, {"info": "flatseasons", "mal_id": "111"})
+        h.client = FakeClient(c1)
+        monkeypatch.setattr(h, "_media", lambda: c1)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: franchise)
+        monkeypatch.setattr("resources.lib.info_routes.franchise_show_title", lambda f, t: "Show")
+        monkeypatch.setattr("resources.lib.info_routes._sort_descending", lambda: False)
+        monkeypatch.setattr("resources.lib.tmdb.episode_stills", lambda *a, **k: {})
+        h.flatseasons()
+        eps = [li._info["video"]["episode"] for (_u, li, _f) in captured]
+        assert eps == [1, 2, 3, 4]  # continuous, not [1, 2, 1, 2]
+
+
 class TestEpisodeProgressBar:
     """The episode-thumbnail progress bar reflects the ACTUAL watched fraction:
     a partial Kodi resume point for the in-progress episode (drives the skin's
