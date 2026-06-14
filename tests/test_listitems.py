@@ -46,8 +46,7 @@ def _reset_season_map(by_anilist=None, tvdb_members=None):
     season_map._BY_MAL = {}
     season_map._TVDB_MEMBERS = tvdb_members or {}
     season_map._LOADED = True
-    season_map._BY_TMDB = None
-    season_map._BY_TMDB_SRC = None
+    season_map._invalidate_reverse_indexes()
 
 
 @pytest.fixture(autouse=True)

@@ -42,16 +42,23 @@ _BY_ANILIST = {}
 _BY_MAL = {}
 _TVDB_MEMBERS = {}
 _META = {}
-# Lazy reverse index: tmdb_id -> [member-rec, ...]. Rebuilt whenever _TVDB_MEMBERS
-# is reassigned (id() guard), so _load()/_save() and tests invalidate it for free.
+# Lazy reverse index: tmdb_id -> [member-rec, ...]. Explicitly invalidated (set to
+# None by _invalidate_reverse_indexes) whenever the source maps are (re)loaded, so a
+# stale index is never served.
 _BY_TMDB = None
-_BY_TMDB_SRC = None
 # Lazy reverse of the FORWARD by_mal/by_anilist index: tmdb_id -> {anilist, mal}.
 # Covers monoliths (One Piece) whose TV entry lives in by_mal, NOT tvdb_members, so
 # members_for_tmdb misses them -- a real reverse-resolve gap (tmdb_lookup forward
 # worked, reverse didn't), which left the skin's tmdb_id Play params unresolvable.
 _BY_TMDB_FLAT = None
-_BY_TMDB_FLAT_SRC = None
+
+
+def _invalidate_reverse_indexes():
+    """Drop the lazy reverse indexes so they rebuild from the current source maps.
+    Must be called after (re)assigning _BY_ANILIST / _BY_MAL / _TVDB_MEMBERS."""
+    global _BY_TMDB, _BY_TMDB_FLAT
+    _BY_TMDB = None
+    _BY_TMDB_FLAT = None
 
 
 # --------------------------------------------------------------------------- #
@@ -193,6 +200,7 @@ def _load():
         _META = raw.get("_meta") or {}
     except Exception:
         _BY_ANILIST, _BY_MAL, _TVDB_MEMBERS, _META = {}, {}, {}, {}
+    _invalidate_reverse_indexes()
 
 
 def _save(compact, sha):
@@ -221,6 +229,7 @@ def _save(compact, sha):
     _TVDB_MEMBERS = payload["tvdb_members"]
     _META = payload["_meta"]
     _LOADED = True
+    _invalidate_reverse_indexes()
 
 
 def _read_meta():
@@ -381,8 +390,8 @@ def members(tvdb_id):
 
 def _ensure_by_tmdb():
     """Build/refresh the lazy tmdb_id -> [member-rec, ...] reverse index."""
-    global _BY_TMDB, _BY_TMDB_SRC
-    if _BY_TMDB is not None and _BY_TMDB_SRC == id(_TVDB_MEMBERS):
+    global _BY_TMDB
+    if _BY_TMDB is not None:
         return _BY_TMDB
     index = {}
     for recs in _TVDB_MEMBERS.values():
@@ -392,7 +401,6 @@ def _ensure_by_tmdb():
                 continue
             index.setdefault(str(tmdb_id), []).append(rec)
     _BY_TMDB = index
-    _BY_TMDB_SRC = id(_TVDB_MEMBERS)
     return _BY_TMDB
 
 
@@ -415,9 +423,8 @@ def members_for_tmdb(tmdb_id):
 
 def _ensure_by_tmdb_flat():
     """Build/refresh tmdb_id -> {'anilist', 'mal'} from the FORWARD by_* index."""
-    global _BY_TMDB_FLAT, _BY_TMDB_FLAT_SRC
-    token = (id(_BY_MAL), id(_BY_ANILIST))
-    if _BY_TMDB_FLAT is not None and _BY_TMDB_FLAT_SRC == token:
+    global _BY_TMDB_FLAT
+    if _BY_TMDB_FLAT is not None:
         return _BY_TMDB_FLAT
     index = {}
     for key, rec in (_BY_ANILIST or {}).items():
@@ -427,7 +434,6 @@ def _ensure_by_tmdb_flat():
         if isinstance(rec, list) and len(rec) >= 3 and isinstance(rec[2], int):
             index.setdefault(str(rec[2]), {}).setdefault("mal", _int_or_none(key))
     _BY_TMDB_FLAT = index
-    _BY_TMDB_FLAT_SRC = token
     return _BY_TMDB_FLAT
 
 

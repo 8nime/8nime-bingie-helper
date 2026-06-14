@@ -42,6 +42,17 @@ AIRED_STATUSES = {"FINISHED", "RELEASING", "HIATUS"}
 _MONOLITH_MIN_EPISODES = 60
 
 
+def is_monolith(episode_count):
+    """True if `episode_count` marks a monolithic long-runner (One Piece, Conan, ...):
+    one AniList entry with far more episodes than a normal cour, a candidate for the
+    TMDB season-split. The public predicate other modules should use instead of reaching
+    the private threshold."""
+    try:
+        return int(episode_count or 0) > _MONOLITH_MIN_EPISODES
+    except (TypeError, ValueError):
+        return False
+
+
 def _start_sort_key(media):
     start = media.get("startDate") or {}
     return (
@@ -339,7 +350,7 @@ def collect_tv_franchise(client, media):
 
     # Monolithic long-runner fallback: the TVDB path gave no real split, but TMDB
     # may divide the show into many seasons. Rebuild from TMDB when so.
-    if len(result) <= 1 and _aired_count(media) > _MONOLITH_MIN_EPISODES:
+    if len(result) <= 1 and is_monolith(_aired_count(media)):
         tmdb_id, _tmdb_season = season_map.tmdb_lookup(media.get("id"), media.get("idMal"))
         if tmdb_id:
             split = _tmdb_season_split(media, tmdb_id)

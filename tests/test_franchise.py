@@ -461,8 +461,7 @@ class TestTmdbSeasonSplit:
                 "tvdb_members": tvdb_members or {},
             }
         )
-        season_map._BY_TMDB = None
-        season_map._BY_TMDB_SRC = None
+        season_map._invalidate_reverse_indexes()
 
     def test_splits_into_tmdb_seasons_with_offsets(self):
         self._inject_one_piece()

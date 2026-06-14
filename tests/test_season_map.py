@@ -32,6 +32,7 @@ def _inject(by_anilist=None, by_mal=None, tvdb_members=None):
     season_map._BY_MAL = by_mal or {}
     season_map._TVDB_MEMBERS = tvdb_members or {}
     season_map._LOADED = True
+    season_map._invalidate_reverse_indexes()
 
 
 def _reset():
@@ -39,6 +40,7 @@ def _reset():
     season_map._BY_MAL = {}
     season_map._TVDB_MEMBERS = {}
     season_map._LOADED = False
+    season_map._invalidate_reverse_indexes()
 
 
 # ---------------------------------------------------------------------------

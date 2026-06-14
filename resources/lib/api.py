@@ -18,6 +18,8 @@ _MEDIA_CACHE = {}
 _FRANCHISE_CACHE = {}
 _MIN_REQUEST_INTERVAL = 0.35
 _LAST_REQUEST_AT = 0.0
+# Seconds before an AniList HTTP request is abandoned.
+_HTTP_TIMEOUT = 20
 
 # AniList caps pagination at page * perPage <= 5000 entries; deeper requests
 # return HTTP 400 "Page depth exceeds maximum allowed". We never advertise a
@@ -279,7 +281,7 @@ def validate_token(token):
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
-            timeout=20,
+            timeout=_HTTP_TIMEOUT,
         )
         if resp.status_code != 200:
             return None
@@ -535,7 +537,7 @@ class AniListClient:
         for attempt in range(4):
             self._throttle()
             try:
-                resp = self._session.post(ANILIST_API, json=payload, timeout=20)
+                resp = self._session.post(ANILIST_API, json=payload, timeout=_HTTP_TIMEOUT)
                 if resp.status_code == 429:
                     retry_after = int(resp.headers.get("Retry-After", 2 + attempt * 2))
                     xbmc.log(

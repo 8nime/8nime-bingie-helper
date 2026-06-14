@@ -65,6 +65,12 @@ def _base_series_title(title):
 
 _ADDON = xbmcaddon.Addon()
 
+# Fallback episode-count guesses when AniList gives neither a total nor a
+# nextAiringEpisode: a currently-RELEASING show is assumed ~2 cours, everything else
+# a single cour. Only used to bound the episode list when nothing better is known.
+_FALLBACK_EPISODES_RELEASING = 24
+_FALLBACK_EPISODES_DEFAULT = 12
+
 
 def _sort_descending():
     """Display order for the seasons list + episode lists in More Info.
@@ -287,8 +293,8 @@ class InfoHandler:
         if next_ep:
             return next_ep
         if status == "RELEASING":
-            return 24
-        return 12
+            return _FALLBACK_EPISODES_RELEASING
+        return _FALLBACK_EPISODES_DEFAULT
 
     def _franchise(self, media=None):
         media = media or self._media()
@@ -755,7 +761,7 @@ class InfoHandler:
         if not total:
             nxt = int(((media or {}).get("nextAiringEpisode") or {}).get("episode") or 0)
             total = (nxt - 1) if nxt else 0
-        return total > franchise._MONOLITH_MIN_EPISODES
+        return franchise.is_monolith(total)
 
     def _resume_episode(self, mal_id, media):
         """Resume-aware next episode for one (cour) mal_id + its media.

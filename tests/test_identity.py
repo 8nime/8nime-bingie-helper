@@ -17,8 +17,7 @@ def _reset_map(by_anilist=None, by_mal=None, tvdb_members=None):
     season_map._BY_MAL = by_mal or {}
     season_map._TVDB_MEMBERS = tvdb_members or {}
     season_map._LOADED = True
-    season_map._BY_TMDB = None
-    season_map._BY_TMDB_SRC = None
+    season_map._invalidate_reverse_indexes()
 
 
 class TestSurrogate:

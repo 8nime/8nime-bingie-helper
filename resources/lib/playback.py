@@ -61,7 +61,8 @@ def flatten_seasons_enabled():
         return value == "true"
 
 
-def _helper_url(**params):
+def helper_url(**params):
+    """Build a plugin:// URL into this addon's own routes from query params."""
     return f"{PLUGIN_URL}/?{urlencode(params)}"
 
 
@@ -70,7 +71,7 @@ def browse_show_path(mal_id):
     if not mal_id:
         return None
     info = "flatseasons" if flatten_seasons_enabled() else "seasons"
-    return _helper_url(info=info, mal_id=str(mal_id), tmdb_type="tv")
+    return helper_url(info=info, mal_id=str(mal_id), tmdb_type="tv")
 
 
 def helper_play_url(mal_id, episode=None, is_movie=False, title=None):
@@ -82,7 +83,7 @@ def helper_play_url(mal_id, episode=None, is_movie=False, title=None):
         params["tmdb_type"] = "movie"
     if title:
         params["title"] = title
-    return _helper_url(**params)
+    return helper_url(**params)
 
 
 def _watchnixtoons_search(title, search_type, episode=None):

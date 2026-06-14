@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import re
-from urllib.parse import urlencode
 
 import xbmc
 import xbmcaddon
@@ -11,6 +10,7 @@ from resources.lib.constants import PLUGIN_URL
 from resources.lib.playback import (
     browse_show_path,
     helper_play_url,
+    helper_url as _helper_url,
     play_episode_path,
     play_movie_path,
 )
@@ -102,10 +102,6 @@ def _build_art(media, is_movie):
         if not is_movie:
             art["tvshow.fanart"] = override["fanart"]
     return art
-
-
-def _helper_url(**params):
-    return f"{PLUGIN_URL}/?{urlencode(params)}"
 
 
 def _tmdb_id_str(media, mal_id):
