@@ -124,3 +124,11 @@ msgctxt "#32068"
 msgid "Cleared %d cache file(s)"
 msgstr "Cleared %d cache file(s)"
 
+msgctxt "#32069"
+msgid "Debug logging"
+msgstr "Debug logging"
+
+msgctxt "#32070"
+msgid "Write a detailed trace to 8nime.debug in the addon profile folder (for diagnosing playback/resume issues). Off by default."
+msgstr "Write a detailed trace to 8nime.debug in the addon profile folder (for diagnosing playback/resume issues). Off by default."
+

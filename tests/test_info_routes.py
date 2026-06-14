@@ -8,6 +8,7 @@ import xbmcplugin
 from resources.lib.info_routes import InfoHandler
 import resources.lib.info_routes as info_routes
 import resources.lib.season_map as season_map
+from resources.lib import progress, watched
 
 
 def _reset_season_map():
@@ -409,10 +410,13 @@ class TestSharedTmdbSeason:
 
 
 class TestTraktUpNext:
+    # _media() has AniList id 101922 / idMal 40748. Progress now lives in the unified
+    # store keyed by AniList id, so tests seed it via progress.apply_anilist(...).
     def test_targets_next_unwatched_episode(self, monkeypatch, captured):
         media = _media()
+        progress.apply_anilist(101922, 40748, 4, total=26)  # synced progress 4
         h = InfoHandler(1, {"info": "trakt_upnext", "mal_id": "40748"})
-        h.client = FakeClient(media, progress=4)
+        h.client = FakeClient(media)
         monkeypatch.setattr(h, "_franchise", lambda m=None: [])  # simple (non-franchise) branch
         h.trakt_upnext()
         assert len(captured) == 1
@@ -423,6 +427,134 @@ class TestTraktUpNext:
         assert "mal_id=40748" in path
         assert "episode=5" in path  # progress 4 -> next 5
         assert captured[0][1].getProperty("IsPlayable") == "true"
+
+    def test_nothing_watched_plays_episode_one(self, monkeypatch, captured):
+        media = _media()
+        h = InfoHandler(1, {"info": "trakt_upnext", "mal_id": "40748"})
+        h.client = FakeClient(media)  # nothing in the store -> progress 0
+        monkeypatch.setattr(h, "_franchise", lambda m=None: [])
+        h.trakt_upnext()
+        assert "episode=1" in captured[0][1].getPath()
+
+    def test_caught_up_replays_last_released(self, monkeypatch, captured):
+        # 7 aired (nextAiringEpisode 8), watched all 7 -> no next episode exists yet,
+        # so Play falls back to the last released episode (7), not the unaired 8.
+        media = _media()
+        progress.apply_anilist(101922, 40748, 7, total=26)
+        h = InfoHandler(1, {"info": "trakt_upnext", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: [])
+        h.trakt_upnext()
+        assert "episode=7" in captured[0][1].getPath()
+
+    def test_local_watched_resumes_without_anilist(self, monkeypatch, captured):
+        # No AniList progress (local-only, legacy mal-keyed store has ep 3) -> the Play
+        # button resumes at ep 4 instead of dead-ending on ep 1.
+        watched.mark_watched(40748, 3)
+        media = _media()
+        h = InfoHandler(1, {"info": "trakt_upnext", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: [])
+        h.trakt_upnext()
+        assert "episode=4" in captured[0][1].getPath()
+
+    def test_uses_higher_of_local_and_anilist(self, monkeypatch, captured):
+        # legacy local store says ep 2, synced AniList says 5 -> resume the higher (6).
+        watched.mark_watched(40748, 2)
+        progress.apply_anilist(101922, 40748, 5, total=26)
+        media = _media()
+        h = InfoHandler(1, {"info": "trakt_upnext", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: [])
+        h.trakt_upnext()
+        assert "episode=6" in captured[0][1].getPath()
+
+    def test_franchise_advances_past_finished_season(self, monkeypatch, captured):
+        # S1 fully aired (26 eps) + fully watched -> advance to S2; S2 has 11 eps,
+        # watched 3 -> resume at S2 ep 4. Progress keyed by each cour's AniList id.
+        s1 = {"idMal": 40748, "id": 1, "episodes": 26, "title": {"english": "S1"}}
+        s2 = {"idMal": 99999, "id": 2, "episodes": 11, "title": {"english": "S2"}}
+        progress.apply_anilist(1, 40748, 26, total=26)
+        progress.apply_anilist(2, 99999, 3, total=11)
+        franchise = [
+            {"season": 1, "cours": [{"mal_id": 40748, "media": s1, "season": 1}]},
+            {"season": 2, "cours": [{"mal_id": 99999, "media": s2, "season": 2}]},
+        ]
+        h = InfoHandler(1, {"info": "trakt_upnext", "mal_id": "40748"})
+        h.client = FakeClient(s1)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: franchise)
+        monkeypatch.setattr(info_routes, "franchise_show_title", lambda f, t: "Show")
+        h.trakt_upnext()
+        path = captured[0][1].getPath()
+        assert "mal_id=99999" in path
+        assert "episode=4" in path
+
+    def test_resumes_latest_watched_when_opening_unwatched_earlier_season(self, monkeypatch, captured):
+        # User opened S1 (never watched) but is mid-S2 (ep 5 of 11). "Resume latest
+        # watched" -> jump to S2 ep 6, NOT S1 ep 1.
+        s1 = {"idMal": 40748, "id": 1, "episodes": 26, "title": {"english": "S1"}}
+        s2 = {"idMal": 99999, "id": 2, "episodes": 11, "title": {"english": "S2"}}
+        progress.apply_anilist(2, 99999, 5, total=11)  # S1 untouched, S2 in progress
+        franchise = [
+            {"season": 1, "cours": [{"mal_id": 40748, "media": s1, "season": 1}]},
+            {"season": 2, "cours": [{"mal_id": 99999, "media": s2, "season": 2}]},
+        ]
+        h = InfoHandler(1, {"info": "trakt_upnext", "mal_id": "40748"})  # opened S1
+        h.client = FakeClient(s1)
+        monkeypatch.setattr(h, "_franchise", lambda m=None: franchise)
+        monkeypatch.setattr(info_routes, "franchise_show_title", lambda f, t: "Show")
+        h.trakt_upnext()
+        path = captured[0][1].getPath()
+        assert "mal_id=99999" in path
+        assert "episode=6" in path
+
+    def test_fast_path_skips_franchise_when_viewed_cour_in_progress(self, monkeypatch, captured):
+        # Opening the season you're watching resolves directly without collecting the
+        # franchise (the slow path) -- _franchise must not even be called.
+        media = _media()  # 7 aired (nextAiringEpisode 8)
+        progress.apply_anilist(101922, 40748, 4, total=26)
+        h = InfoHandler(1, {"info": "trakt_upnext", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        franchise_calls = []
+        monkeypatch.setattr(h, "_franchise", lambda m=None: franchise_calls.append(1) or [])
+        h.trakt_upnext()
+        assert "episode=5" in captured[0][1].getPath()
+        assert franchise_calls == []  # fast path: franchise never collected
+
+    def test_monolith_skips_franchise(self, monkeypatch, captured):
+        # A 1000-ep monolith with no progress resolves ep 1 directly -- never collects
+        # the franchise (no TMDB season split on the Play path).
+        media = _media()
+        media["episodes"] = 1000
+        media.pop("nextAiringEpisode", None)
+        h = InfoHandler(1, {"info": "trakt_upnext", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        franchise_calls = []
+        monkeypatch.setattr(h, "_franchise", lambda m=None: franchise_calls.append(1) or [])
+        h.trakt_upnext()
+        assert "episode=1" in captured[0][1].getPath()
+        assert franchise_calls == []
+
+
+class TestPlayResume:
+    def test_no_episode_is_resume_aware(self, monkeypatch):
+        # The spotlight/hero Play routes through play() with no episode -> it must
+        # resume the same way the More-Info Play (trakt_upnext) does.
+        media = _media()  # 7 aired
+        progress.apply_anilist(101922, 40748, 4, total=26)
+        h = InfoHandler(1, {"info": "play", "mal_id": "40748"})
+        h.client = FakeClient(media)
+        seen = {}
+
+        def fake_resolve(**kwargs):
+            seen["episode"] = kwargs.get("episode")
+            return None  # short-circuit before actual playback
+
+        monkeypatch.setattr(info_routes, "resolve_play_path", fake_resolve)
+        monkeypatch.setattr(info_routes, "log_missing_plugin", lambda *a, **k: None)
+        monkeypatch.setattr(xbmcplugin, "setResolvedUrl", lambda *a, **k: None)
+        h.play()
+        assert seen["episode"] == "5"  # progress 4 -> resume ep 5
 
 
 class TestBaseSeriesTitle:

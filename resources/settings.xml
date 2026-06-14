@@ -83,6 +83,11 @@
             <heading>32063</heading>
           </control>
         </setting>
+        <setting id="debug_logging" type="boolean" label="32069" help="32070">
+          <level>0</level>
+          <default>false</default>
+          <control type="toggle"/>
+        </setting>
       </group>
     </category>
   </section>

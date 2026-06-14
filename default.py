@@ -283,6 +283,10 @@ def main():
     if args.get("clear_expired_cache") == "true":
         clear_cache(expired_only=True)
         return
+    if args.get("action") == "resumewatch":
+        from resources.lib import resume
+        resume.babysit(args.get("mal_id"), args.get("episode"), args.get("aid"))
+        return
     if args.get("action") == "catfilter":
         category_filter(args)
         return

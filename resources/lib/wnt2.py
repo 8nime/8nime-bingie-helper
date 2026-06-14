@@ -26,6 +26,8 @@ import time
 from urllib.parse import urlencode, urlparse
 
 import requests
+import xbmc
+from resources.lib import debuglog
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 from urllib3.exceptions import InsecureRequestWarning
@@ -155,16 +157,83 @@ def search_series(query, base_url, session=None):
     return [(m.group("link"), m.group("name")) for m in _SERIES_RE.finditer(seg)]
 
 
-def episode_list(series_url, base_url, session=None):
-    """Return [(link, name, lang_type), ...] for a series page (newest-first as on site)."""
-    session = session or requests.session()
+# Disk-backed parsed-episode-list cache {url: {"ts", "eps"}}. resolve_episode_url
+# fetches this on EVERY play (even when the series-page URL is already cached), and a
+# long-runner's page (One Piece, ~1000 eps) is expensive to download + parse. Persisting
+# the parsed list means the heavy work runs at most once per series per TTL -- and
+# SURVIVES restarts -- so resuming the next episode (or replaying) is an instant match.
+_EPISODE_LIST_CACHE = None  # lazy {url: {"ts": float, "eps": [[link, name, type], ...]}}
+_EPISODE_LIST_TTL = 21600   # 6h -- a series' list only changes when a new episode airs;
+# a cached-list MISS forces a refresh (see resolve_episode_url), so a just-aired episode
+# is still picked up immediately rather than waiting out the TTL.
+
+
+def _episode_list_cache_path():
+    try:
+        import xbmcvfs
+
+        from resources.lib.constants import ADDON_ID
+
+        base = xbmcvfs.translatePath("special://profile/addon_data/%s/" % ADDON_ID)
+    except Exception:
+        base = os.path.join(os.path.expanduser("~"), ".8nime")
+    return os.path.join(base, "wnt2_episodes.json")
+
+
+def _episode_list_cache():
+    global _EPISODE_LIST_CACHE
+    if _EPISODE_LIST_CACHE is None:
+        _EPISODE_LIST_CACHE = {}
+        try:
+            path = _episode_list_cache_path()
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as handle:
+                    _EPISODE_LIST_CACHE = json.load(handle) or {}
+        except Exception:
+            _EPISODE_LIST_CACHE = {}
+    return _EPISODE_LIST_CACHE
+
+
+def _episode_list_cache_save():
+    try:
+        path = _episode_list_cache_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(_EPISODE_LIST_CACHE, handle)
+    except Exception:
+        pass
+
+
+def reset_episode_list_cache():
+    """Test hook / refresh: drop the parsed-episode-list cache (reloads from disk)."""
+    global _EPISODE_LIST_CACHE
+    _EPISODE_LIST_CACHE = None
+
+
+def episode_list(series_url, base_url, session=None, force_refresh=False):
+    """Return [(link, name, lang_type), ...] for a series page (newest-first as on site).
+
+    Disk-cached for 6h, keyed by the resolved page URL (see the cache note above): the
+    heavy fetch + parse of a long-runner's page runs at most once per series per window
+    and survives restarts. ``force_refresh`` bypasses the cache (used to self-heal a
+    stale list that's missing a just-aired episode)."""
     url = series_url if series_url.startswith("http") else base_url + series_url
+    cache = _episode_list_cache()
+    if not force_refresh:
+        entry = cache.get(url)
+        if entry and (time.time() - (entry.get("ts") or 0)) < _EPISODE_LIST_TTL:
+            return [tuple(e) for e in entry.get("eps") or []]
+    session = session or requests.session()
     resp = _request(session, url)
     seg = _slice(resp.text, _EPISODE_START, _EPISODE_END)
-    return [
+    eps = [
         (m.group("link"), m.group("name"), m.group("type"))
         for m in _EPISODE_RE.finditer(seg)
     ]
+    if eps:  # never cache an empty parse (transient fetch failure / stale slug)
+        cache[url] = {"ts": time.time(), "eps": [list(e) for e in eps]}
+        _episode_list_cache_save()
+    return eps
 
 
 def _pair_score(n, t):
@@ -440,9 +509,20 @@ def resolve_episode_url(titles, number, base_url, lang="sub", min_score=0.55,
     # fresh search below, which overwrites it.
     cached_url = _series_cache_get(titles)
     if cached_url:
+        _t = time.time()
         eps = episode_list(cached_url, base_url, session)
+        _t_fetch = time.time() - _t
+        _t = time.time()
         hit = match_episode(eps, number, season=season, offset=offset,
                             lang=lang, titles=titles)
+        debuglog.dbg("wnt2 cached series: episode_list %d eps in %.2fs, match in %.2fs hit=%s" % (len(eps), _t_fetch, time.time() - _t, bool(hit)))
+        if not hit:
+            # Cached list may be stale (a just-aired episode) -> refetch once fresh
+            # before giving up, so the newest episode self-heals without a TTL wait.
+            eps = episode_list(cached_url, base_url, session, force_refresh=True)
+            hit = match_episode(eps, number, season=season, offset=offset,
+                                lang=lang, titles=titles)
+            debuglog.dbg("wnt2 cached series REFRESH: %d eps, hit=%s" % (len(eps), bool(hit)))
         if hit:
             debug.update({"series_url": cached_url, "cached": True, "episodes": len(eps),
                           "episode": {"name": hit[1], "type": hit[2], "url": hit[0]}})
@@ -453,7 +533,9 @@ def resolve_episode_url(titles, number, base_url, lang="sub", min_score=0.55,
     # transient miss into a hit instead of a hard "no match".
     for attempt in range(2):
         for title in titles:
+            _t = time.time()
             results = search_series(title, base_url, session)
+            debuglog.dbg("wnt2 search '%s' -> %d results in %.2fs" % (title, len(results), time.time() - _t))
             debug["tried"].append({"query": title, "results": len(results), "attempt": attempt})
             if not results:
                 continue
@@ -462,10 +544,13 @@ def resolve_episode_url(titles, number, base_url, lang="sub", min_score=0.55,
                 debug["score"] = max(debug["score"], score)
                 continue
             debug.update({"series": name, "series_url": link, "score": score})
+            _t = time.time()
             eps = episode_list(link, base_url, session)
-            debug["episodes"] = len(eps)
+            _t_fetch = time.time() - _t
+            _t = time.time()
             hit = match_episode(eps, number, season=season, offset=offset,
                                 lang=lang, titles=titles)
+            debuglog.dbg("wnt2 search series: episode_list %d eps in %.2fs, match in %.2fs hit=%s" % (len(eps), _t_fetch, time.time() - _t, bool(hit)))
             if hit:
                 debug["episode"] = {"name": hit[1], "type": hit[2], "url": hit[0]}
                 _series_cache_put(titles, link)

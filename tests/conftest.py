@@ -39,10 +39,23 @@ def _reset_addon_settings(tmp_path):
     from resources.lib import watched as _watched
     _watched.reset()
     _watched._store_path = lambda: os.path.join(str(tmp_path), "watched.json")
+    from resources.lib import resume as _resume
+    _resume.reset()
+    _resume._store_path = lambda: os.path.join(str(tmp_path), "resume.json")
+    from resources.lib import progress as _progress
+    _progress.reset()
+    _progress._store_path = lambda: os.path.join(str(tmp_path), "progress.json")
+    from resources.lib import debuglog as _debuglog
+    _debuglog._path = lambda: os.path.join(str(tmp_path), "8nime.debug")
     from resources.lib import wnt2 as _wnt2
     _wnt2.reset_series_cache()
+    _wnt2.reset_episode_list_cache()
     _wnt2._series_cache_path = lambda: os.path.join(str(tmp_path), "wnt2_series.json")
+    _wnt2._episode_list_cache_path = lambda: os.path.join(str(tmp_path), "wnt2_episodes.json")
     yield
     _xbmcaddon.reset()
     _watched.reset()
+    _resume.reset()
+    _progress.reset()
     _wnt2.reset_series_cache()
+    _wnt2.reset_episode_list_cache()

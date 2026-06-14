@@ -7,9 +7,9 @@ import xbmcaddon
 import xbmcgui
 import xbmcplugin
 
-from resources.lib import watched
+from resources.lib import watched, resume, progress, debuglog
 from resources.lib.api import AniListClient, media_type_from_tmdb
-from resources.lib.constants import PLUGIN_URL
+from resources.lib.constants import ADDON_ID, PLUGIN_URL
 from resources.lib.episodes import (
     signature,
     streaming_covers,
@@ -43,7 +43,7 @@ from resources.lib.playback import (
     log_missing_plugin,
     resolve_play_path,
 )
-from resources.lib import season_map, tmdb, wnt2, fanimef, identity
+from resources.lib import season_map, tmdb, wnt2, fanimef, identity, franchise
 
 # A trailing season/part/cour marker on a cour title ("X Season 2", "X 2nd Season
 # Part II", "X Cour 2"). Stripped to recover the base series name for searching.
@@ -155,6 +155,7 @@ class InfoHandler:
         return self.client.get_media(mal_id=mal_id)
 
     def details(self):
+        debuglog.dbg("details START mal=%s cacheonly=%s" % (self.params.get("mal_id"), self.cacheonly))
         media = self._media()
         if not media:
             xbmcplugin.endOfDirectory(self.handle, succeeded=self.cacheonly)
@@ -293,7 +294,12 @@ class InfoHandler:
         media = media or self._media()
         if not media:
             return []
-        return collect_tv_franchise(self.client, media)
+        import time as _t
+        _s = _t.time()
+        debuglog.dbg("_franchise START mal=%s" % media.get("idMal"))
+        result = collect_tv_franchise(self.client, media)
+        debuglog.dbg("_franchise DONE mal=%s cours=%s in %.2fs" % (media.get("idMal"), len(list(iter_cours(result))) if result else 0, _t.time() - _s))
+        return result
 
     def _build_episode_list(
         self, media, mal_id=None, season=1, show_title=None, season_offset=0,
@@ -360,14 +366,16 @@ class InfoHandler:
         total_eps = int(episode_count) if is_split else total
         if not is_split and season_total:
             total_eps = int(season_total)
-        # Watched state: the always-on local store, unioned with AniList progress
-        # when logged in. Keyed by the PLAY episode (what play() records).
-        watched_eps = watched.watched_episodes(mal_id)
-        if self.client.has_token():
-            try:
-                watched_eps = watched_eps | set(range(1, self.client.get_progress(mal_id) + 1))
-            except Exception:
-                pass
+        # Watched state from the unified O(1) store (AniList progress synced at boot +
+        # local completion marks), keyed by AniList id -- no network here. The legacy
+        # mal-keyed watched store is unioned in for pre-migration history. Episodes use
+        # the PLAY numbering (cour-local, or absolute for a monolith).
+        aid = media.get("id")
+        watched_eps = set(watched.watched_episodes(mal_id))
+        prog = progress.progress_of(aid)
+        if prog:
+            watched_eps = watched_eps | set(range(1, prog + 1))
+        watched_eps = watched_eps | progress.watched_set(aid)
         items = []
         for ep in range(1, last + 1):
             if is_split:
@@ -645,6 +653,7 @@ class InfoHandler:
 
     def episodes(self):
         mal_id = self._mal_id()
+        debuglog.dbg("episodes START mal=%s" % mal_id)
         if not mal_id:
             return self._finish([], "episodes")
         media = self.client.get_media(mal_id=mal_id)
@@ -719,51 +728,130 @@ class InfoHandler:
     def relations(self):
         return self.collection()
 
+    def _is_monolith(self, media):
+        """A single AniList entry that TMDB splits into many display arcs (One Piece,
+        Naruto, ...). It plays by ABSOLUTE episode number, so it needs no per-cour
+        franchise -- detecting it cheaply by episode count lets the Play path skip the
+        slow franchise/TMDB-season split that only exists for the seasons display."""
+        total = int((media or {}).get("episodes") or 0)
+        if not total:
+            nxt = int(((media or {}).get("nextAiringEpisode") or {}).get("episode") or 0)
+            total = (nxt - 1) if nxt else 0
+        return total > franchise._MONOLITH_MIN_EPISODES
+
+    def _resume_episode(self, mal_id, media):
+        """Resume-aware next episode for one (cour) mal_id + its media.
+
+        Combines the local watched store with AniList progress (the higher of the
+        two, so local-only users resume too) and clamps to what has actually been
+        released:
+          - nothing watched                 -> episode 1
+          - released episodes still unwatched -> last-watched + 1
+          - caught up to the last release     -> the last released episode
+
+        Returns ``(episode, fully_done, progress)``. ``fully_done`` is True only when
+        the cour is fully AIRED *and* fully watched (the franchise logic advances past
+        it). ``progress`` is the resolved watched count (0 = untouched) so callers can
+        tell "in progress here" from "never started" without recomputing.
+
+        Pure O(1) local lookup -- reads the unified progress store (AniList progress
+        synced at boot + local completion marks, keyed by AniList id) plus the legacy
+        mal-keyed watched store. No network on this path.
+        """
+        aid = media.get("id")
+        legacy = watched.watched_episodes(mal_id)
+        legacy_progress = max(legacy) if legacy else 0
+        prog = max(legacy_progress, progress.progress_of(aid))
+        next_air = int((media.get("nextAiringEpisode") or {}).get("episode") or 0)
+        total = int(media.get("episodes") or 0)
+        last_released = (next_air - 1) if next_air else total
+        if prog <= 0:
+            episode, fully_done = 1, False
+        elif last_released and prog >= last_released:
+            # Watched everything released so far. If nothing more will ever air this
+            # is a finished title (a franchise advances past it); otherwise it's the
+            # currently-airing tail -> stay on the latest released episode.
+            episode, fully_done = last_released, not next_air
+        else:
+            episode, fully_done = prog + 1, False
+        return episode, fully_done, prog
+
     def trakt_upnext(self):
+        debuglog.dbg("trakt_upnext PARAMS=%s" % dict(self.params))
         mal_id = self._mal_id()
+        debuglog.dbg("trakt_upnext START mal=%s" % mal_id)
         if not mal_id:
             return self._finish([], "episodes")
         media = self.client.get_media(mal_id=mal_id)
+        debuglog.dbg("trakt_upnext got media mal=%s eps=%s" % (mal_id, (media or {}).get("episodes")))
         if not media:
             return self._finish([], "episodes")
+
+        # FAST PATH: if the viewed cour itself is in progress, resume it directly.
+        # This is "resume my latest watched" for the common case (opening the season
+        # you're on) AND it skips collecting the whole franchise (~0.5s/cour of
+        # sequential network) just to populate the Play button.
+        viewed_ep, viewed_done, viewed_prog = self._resume_episode(mal_id, media)
+        if viewed_prog > 0 and not viewed_done:
+            li = build_episode_item(mal_id, viewed_ep, _title(media), self._episode_total(media))
+            return self._finish([li] if li else [], "episodes")
+
+        # MONOLITH (One Piece etc.): one AniList entry, absolute episodes, no real
+        # cours -> resume the entry directly. Skips collecting the franchise / TMDB
+        # season split (a slow network call that on the no-progress path used to hang
+        # the Play button).
+        if self._is_monolith(media):
+            debuglog.dbg("trakt_upnext MONOLITH short-circuit mal=%s ep=%s" % (mal_id, viewed_ep))
+            li = build_episode_item(mal_id, viewed_ep, _title(media), self._episode_total(media))
+            return self._finish([li] if li else [], "episodes")
+
+        # The viewed cour is untouched (a sibling season may be the one in progress)
+        # or fully finished (advance to the next season) -> consult the franchise.
+        debuglog.dbg("trakt_upnext collecting franchise mal=%s ..." % mal_id)
         franchise = self._franchise(media)
+        debuglog.dbg("trakt_upnext franchise ready mal=%s cours=%s" % (mal_id, len(list(iter_cours(franchise))) if franchise else 0))
         show_title = franchise_show_title(franchise, _title) if franchise else _title(media)
         if franchise:
-            for cour in iter_cours(franchise):
-                cour_mal = cour.get("mal_id")
+            cours = list(iter_cours(franchise))
+            # "resume latest watched": the furthest (latest-ordered) cour with any
+            # progress, ignoring unwatched earlier seasons.
+            latest = None  # (idx, cour, episode, fully_done)
+            for idx, cour in enumerate(cours):
+                ep, done, prog = self._resume_episode(cour.get("mal_id"), cour.get("media") or {})
+                if prog > 0:
+                    latest = (idx, cour, ep, done)
+            if latest is not None:
+                idx, cour, ep, done = latest
+                # Finished that season and a newer one exists -> start the next.
+                if done and idx + 1 < len(cours):
+                    cour = cours[idx + 1]
+                    ep, _, _ = self._resume_episode(cour.get("mal_id"), cour.get("media") or {})
+            else:
+                # Nothing watched anywhere -> first cour, episode 1.
+                cour, ep = (cours[0] if cours else None), 1
+            if cour is not None:
                 cour_media = cour.get("media") or {}
-                total = self._episode_total(cour_media)
-                progress = self.client.get_progress(cour_mal)
-                next_ep = progress + 1
-                if total and next_ep > total:
-                    continue
-                if not total and next_ep < 1:
-                    next_ep = 1
-                next_ep = max(1, next_ep)
                 li = build_episode_item(
-                    cour_mal,
-                    next_ep,
-                    show_title,
-                    total,
-                    season=cour.get("season") or 1,
-                    play_title=_title(cour_media),
+                    cour.get("mal_id"), ep, show_title, self._episode_total(cour_media),
+                    season=cour.get("season") or 1, play_title=_title(cour_media),
                 )
                 return self._finish([li] if li else [], "episodes")
-        progress = self.client.get_progress(mal_id)
-        next_ep = max(1, progress + 1)
-        total = media.get("episodes") or next_ep
-        if next_ep > total and total:
-            next_ep = 1
-        li = build_episode_item(mal_id, next_ep, show_title, total)
+
+        # Non-franchise: resume the viewed title (ep 1 when nothing is watched).
+        total = media.get("episodes") or viewed_ep
+        li = build_episode_item(mal_id, viewed_ep, show_title, total)
         return self._finish([li] if li else [], "episodes")
 
     def _record_watched(self, mal_id, media, episode, is_movie):
-        """Mark an episode watched locally (always) + on AniList (when logged in).
+        """Launch the one-shot resume + completion tracker for a starting playback.
 
-        Runs at play time (post-resolve) so it's optimistic -- marks on start, not on
-        completion -- which is what keeps the watched indicator + continue-watching in
-        sync without a background player monitor. Local tracking needs no AniList
-        login. Movies record episode 1 (-> AniList COMPLETED via update_progress)."""
+        Tracking is COMPLETION-BASED (not optimistic): the babysitter (resume.babysit)
+        seeks to any saved position, then on stop marks the episode watched locally +
+        advances AniList progress only once ~90% is reached -- otherwise it stores the
+        resume position. Marking at completion rather than at play start means a
+        half-watched episode stays "unwatched" so Play resumes it (with the seek)
+        instead of skipping ahead. Not a permanent service; the script exits when this
+        playback ends. Movies track as episode 1."""
         if not mal_id:
             return
         if is_movie:
@@ -775,31 +863,33 @@ class InfoHandler:
                 return
             if ep < 1:
                 return
-        watched.mark_watched(mal_id, ep)
-        if media and media.get("id"):
-            try:
-                self.client.update_progress(media["id"], ep)
-            except Exception:
-                pass
+        aid = (media or {}).get("id") or ""
+        try:
+            xbmc.executebuiltin(
+                "RunScript(%s, action=resumewatch, mal_id=%s, episode=%s, aid=%s)"
+                % (ADDON_ID, mal_id, ep, aid)
+            )
+        except Exception:
+            pass
 
     def play(self):
         """Resolve playback through the configured plugin at click time."""
         log_missing_plugin()
         mal_id = self._mal_id()
+        debuglog.dbg("play START mal=%s episode=%s" % (mal_id, self.params.get("episode")))
         media = self._media() if mal_id else None
         episode = self.params.get("episode")
         title = self.params.get("title") or (_title(media) if media else "")
         tmdb_type = (self.params.get("tmdb_type") or "").lower()
         is_movie = tmdb_type == "movie" or (media and (media.get("format") or "").upper() in ("MOVIE", "ONE_SHOT"))
 
-        # "Play latest": a show item's Play button routes here with no episode (the
-        # spotlight/hero "Play" expectation). Resolve the latest AIRED episode so
-        # the provider plays something instead of dead-ending on a browse/search.
+        # "Play": a show item's Play button routes here with no episode (the
+        # spotlight/hero "Play" expectation). Resume-aware -- play last-watched + 1,
+        # or the latest released episode if caught up, or episode 1 if nothing is
+        # watched -- so it agrees with the More-Info Play (trakt_upnext) button.
         if not is_movie and not episode and media:
-            total = int(media.get("episodes") or 0)
-            next_ep = int((media.get("nextAiringEpisode") or {}).get("episode") or 0)
-            latest = (next_ep - 1) if next_ep else total
-            episode = str(latest if latest >= 1 else 1)
+            resume_ep, _, _ = self._resume_episode(mal_id, media)
+            episode = str(resume_ep)
 
         path = resolve_play_path(
             media=media,
@@ -912,14 +1002,19 @@ class InfoHandler:
         TMDB-split monolith (its episode is already absolute -- season-aware matching
         does not apply; the number-only fallback in match_episode handles it).
         """
+        # Monolith: absolute episodes, season-aware matching doesn't apply -> (1, 0)
+        # WITHOUT collecting the franchise. This keeps the play path off the slow TMDB
+        # season split (which previously made One Piece take ages to resolve).
+        if self._is_monolith(media):
+            return 1, 0
         try:
-            franchise = self._franchise(media)
+            groups = self._franchise(media)
         except Exception:
-            franchise = None
-        if not franchise or any(g.get("_tmdb_split") for g in franchise):
+            groups = None
+        if not groups or any(g.get("_tmdb_split") for g in groups):
             return 1, 0
         target = int(mal_id or 0)
-        for group in franchise:
+        for group in groups:
             running = 0
             for cour in group.get("cours") or []:
                 if int(cour.get("mal_id") or 0) == target:
@@ -971,10 +1066,15 @@ class InfoHandler:
         # Resolve the cour's franchise season + intra-season offset once: it pins
         # the right wcostream season for playback AND gives the OSD a correct
         # SxxExx (our play URL carries no season, so params['season'] is absent).
+        import time as _time
+        _t = _time.time()
         season_n, offset = self._wnt2_season_offset(mal_id, media)
+        debuglog.dbg("_wnt2_play_item season_offset=(%s,%s) in %.2fs" % (season_n, offset, _time.time() - _t))
+        _t = _time.time()
         ep_url = self._wnt2_episode_url(
             mal_id, media, title, episode, season=season_n, offset=offset
         )
+        debuglog.dbg("_wnt2_play_item episode_url resolved in %.2fs url=%s" % (_time.time() - _t, bool(ep_url)))
         if not ep_url:
             return None
         try:

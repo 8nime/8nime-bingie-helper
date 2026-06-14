@@ -46,6 +46,12 @@ _META = {}
 # is reassigned (id() guard), so _load()/_save() and tests invalidate it for free.
 _BY_TMDB = None
 _BY_TMDB_SRC = None
+# Lazy reverse of the FORWARD by_mal/by_anilist index: tmdb_id -> {anilist, mal}.
+# Covers monoliths (One Piece) whose TV entry lives in by_mal, NOT tvdb_members, so
+# members_for_tmdb misses them -- a real reverse-resolve gap (tmdb_lookup forward
+# worked, reverse didn't), which left the skin's tmdb_id Play params unresolvable.
+_BY_TMDB_FLAT = None
+_BY_TMDB_FLAT_SRC = None
 
 
 # --------------------------------------------------------------------------- #
@@ -405,6 +411,43 @@ def members_for_tmdb(tmdb_id):
         if member is not None:
             out.append(member)
     return out
+
+
+def _ensure_by_tmdb_flat():
+    """Build/refresh tmdb_id -> {'anilist', 'mal'} from the FORWARD by_* index."""
+    global _BY_TMDB_FLAT, _BY_TMDB_FLAT_SRC
+    token = (id(_BY_MAL), id(_BY_ANILIST))
+    if _BY_TMDB_FLAT is not None and _BY_TMDB_FLAT_SRC == token:
+        return _BY_TMDB_FLAT
+    index = {}
+    for key, rec in (_BY_ANILIST or {}).items():
+        if isinstance(rec, list) and len(rec) >= 3 and isinstance(rec[2], int):
+            index.setdefault(str(rec[2]), {}).setdefault("anilist", _int_or_none(key))
+    for key, rec in (_BY_MAL or {}).items():
+        if isinstance(rec, list) and len(rec) >= 3 and isinstance(rec[2], int):
+            index.setdefault(str(rec[2]), {}).setdefault("mal", _int_or_none(key))
+    _BY_TMDB_FLAT = index
+    _BY_TMDB_FLAT_SRC = token
+    return _BY_TMDB_FLAT
+
+
+def ids_for_tmdb(tmdb_id):
+    """tmdb_id -> {'anilist', 'mal'} from the forward index, or None.
+
+    Monolith-safe fallback for members_for_tmdb: One Piece's TV entry is recorded in
+    by_mal (not tvdb_members), so only this reverse finds mal 21 from tmdb 37854.
+    """
+    _load()
+    if tmdb_id is None or not _intable(tmdb_id):
+        return None
+    return _ensure_by_tmdb_flat().get(str(int(tmdb_id)))
+
+
+def _int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _intable(value):

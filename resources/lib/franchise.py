@@ -103,10 +103,32 @@ def _fribb_cours(client, tvdb_id):
     tmdb_seasons = {m.get("tmdb_season") for m in tv_members if m.get("tmdb_season")}
     group_by_tmdb = len(tvdb_seasons) <= 1 and len(tmdb_seasons) > 1
 
+    # Fetch every cour's media in ONE batched request (by AniList id) instead of a
+    # throttled per-cour round trip -- a big franchise (One Piece ~22 cours) drops
+    # from ~N*0.35s to a single call. Falls back to a per-member fetch for any id the
+    # batch didn't return (and degrades to the old path if the client can't batch).
+    anilist_ids = [m.get("anilist") for m in tv_members if m.get("anilist")]
+    prefetched = {}
+    if anilist_ids:
+        try:
+            got = client.get_media_many(anilist_ids)
+            if isinstance(got, dict):
+                prefetched = got
+        except Exception:
+            prefetched = {}
+
     cours = []
     complete = True
     for member in sorted(tv_members, key=lambda m: (m["season"], m["mal"] or 0)):
-        full = _fetch_media(client, mal_id=member["mal"], anilist_id=member["anilist"])
+        full = None
+        a_id = member.get("anilist")
+        if a_id is not None:
+            try:
+                full = prefetched.get(int(a_id))
+            except (TypeError, ValueError):
+                full = None
+        if not full:
+            full = _fetch_media(client, mal_id=member["mal"], anilist_id=member["anilist"])
         if not full:
             complete = False
             continue

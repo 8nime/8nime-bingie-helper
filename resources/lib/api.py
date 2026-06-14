@@ -8,7 +8,7 @@ import xbmc
 import xbmcaddon
 
 from resources.lib.auth import get_anilist_token, has_anilist_token
-from resources.lib import watched
+from resources.lib import watched, resume, progress as progress_store
 from resources.lib.cache import ApiCache, get_api_cache
 from resources.lib.constants import ANILIST_API
 
@@ -128,6 +128,21 @@ query ($idMal: Int, $id: Int, $type: MediaType) {
 }
 """ % (RELATION_NODE_FIELDS.strip(), RELATION_NODE_FIELDS.strip())
 
+# Many medias by AniList id in ONE request -- used to assemble a franchise's cours
+# without a throttled per-cour round trip. Carries the list/episode fields the cours
+# need (incl. streamingEpisodes for thumbnails) but not the cast/crew the detail view
+# loads, so these must NOT be written to the single-media cache.
+MEDIA_BATCH_QUERY = """
+query ($ids: [Int], $perpage: Int = 50) {
+    Page(page: 1, perPage: $perpage) {
+        media(id_in: $ids, type: ANIME) {
+            %s
+            streamingEpisodes { title thumbnail site }
+        }
+    }
+}
+""" % MEDIA_FIELDS.strip()
+
 BASE_QUERY = """
 query (
     $page: Int = 1,
@@ -225,6 +240,24 @@ query ($userId: Int, $status: MediaListStatus, $sort: [MediaListSort]) {
 
 VIEWER_QUERY = """
 query { Viewer { id name } }
+"""
+
+# Lean, status-less list pull for the boot/login progress sync: every tracked anime
+# with just its progress + the ids/episode-count the local store needs. Far smaller
+# than LIST_COLLECTION_QUERY (no titles/art/etc.), so the whole list comes back in one
+# fast request and is cheap to parse.
+PROGRESS_SYNC_QUERY = """
+query ($userId: Int) {
+    MediaListCollection(userId: $userId, type: ANIME) {
+        lists {
+            entries {
+                progress
+                updatedAt
+                media { id idMal episodes }
+            }
+        }
+    }
+}
 """
 
 
@@ -457,6 +490,30 @@ class AniListClient:
             return None
         data = self._post(FRANCHISE_MEDIA_QUERY, variables)
         return (data or {}).get("Media")
+
+    def get_media_many(self, anilist_ids):
+        """Fetch many ANIME medias by AniList id in ONE request (chunked at 50).
+
+        Lets a franchise assemble its cours in a single round trip instead of N
+        throttled get_media calls (0.35s apart). Returns {anilist_id: media}. These
+        carry the list/episode fields the cours need (incl. streamingEpisodes) but
+        NOT cast/crew, so they are deliberately NOT written to the single-media cache
+        the detail view reads."""
+        ids = []
+        for raw in anilist_ids or []:
+            try:
+                ids.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        out = {}
+        for start in range(0, len(ids), 50):
+            chunk = ids[start:start + 50]
+            data = self._post(MEDIA_BATCH_QUERY, {"ids": chunk, "perpage": len(chunk)})
+            for media in (((data or {}).get("Page") or {}).get("media") or []):
+                mid = media.get("id")
+                if mid:
+                    out[int(mid)] = media
+        return out
 
     def _throttle(self):
         global _LAST_REQUEST_AT
@@ -728,16 +785,54 @@ class AniListClient:
                     return int(item["idMal"])
         return None
 
-    def _list_entries(self, status, sort):
+    def sync_progress(self):
+        """Pull the user's ENTIRE AniList anime list into the local progress store.
+
+        One Viewer call + one lean status-less MediaListCollection request -> the
+        resume/Play path then reads progress as a pure O(1) local lookup (no network).
+        Runs at Kodi boot (service.py) and after login. No-op without a token. Returns
+        the number of entries synced (for logging)."""
+        if not has_anilist_token():
+            return 0
+        viewer = self._post(VIEWER_QUERY)
+        if not viewer or not viewer.get("Viewer"):
+            return 0
+        user_id = viewer["Viewer"]["id"]
+        # use_cache=False: this must reflect progress the user made elsewhere since the
+        # last boot, not a stale 1-hour cache entry.
+        data = self._post(PROGRESS_SYNC_QUERY, {"userId": user_id}, use_cache=False)
+        if not data:
+            return 0
+        docs = {}
+        collection = data.get("MediaListCollection") or {}
+        for mlist in collection.get("lists") or []:
+            for entry in mlist.get("entries") or []:
+                media = entry.get("media") or {}
+                anilist_id = media.get("id")
+                if not anilist_id:
+                    continue
+                docs[int(anilist_id)] = {
+                    "mal_id": media.get("idMal"),
+                    "total": int(media.get("episodes") or 0),
+                    "progress": int(entry.get("progress") or 0),
+                    "watched": {},
+                    "ts": float(entry.get("updatedAt") or 0),
+                }
+        if docs:
+            progress_store.replace_all(docs)
+        return len(docs)
+
+    def _list_entries(self, status, sort, use_cache=True):
         if not has_anilist_token():
             return []
-        viewer = self._post(VIEWER_QUERY)
+        viewer = self._post(VIEWER_QUERY)  # viewer id is stable -> fine to cache
         if not viewer or not viewer.get("Viewer"):
             return []
         user_id = viewer["Viewer"]["id"]
         data = self._post(
             LIST_COLLECTION_QUERY,
             {"userId": user_id, "status": status, "sort": sort},
+            use_cache=use_cache,
         )
         if not data:
             return []
@@ -750,41 +845,53 @@ class AniListClient:
         return entries
 
     def next_up(self):
-        """Continue Watching: AniList CURRENT (when logged in) + locally-in-progress
-        shows from the watched store, so the row works without an AniList login."""
+        """Continue Watching, all local (no network beyond cached media resolves):
+          1) in-progress entries from the unified progress store (AniList progress
+             synced at boot + local completions, keyed by AniList id),
+          2) pre-migration local-watched history (legacy mal-keyed store),
+          3) mid-episode resume points (started, no episode finished yet).
+        Deduped by mal_id, recency-ordered, caught-up shows dropped."""
         items, seen = [], set()
-        if self.has_token():
-            for entry in self._list_entries("CURRENT", ["UPDATED_TIME_DESC"]):
-                media = entry.get("media")
-                if not media or not media.get("idMal"):
-                    continue
-                total = media.get("episodes") or 0
-                prog = entry.get("progress") or 0
-                if total and prog >= total:
-                    continue
-                media["_progress"] = prog
-                items.append(media)
-                seen.add(int(media["idMal"]))
+
+        def _add(media, prog):
+            mal = media.get("idMal") if media else None
+            if not mal or int(mal) in seen:
+                return
+            total = int(media.get("episodes") or 0)
+            if total and prog >= total:
+                return
+            media["_progress"] = prog
+            items.append(media)
+            seen.add(int(mal))
+
+        for anilist_id in progress_store.recent_anilist_ids():
+            doc = progress_store.get(anilist_id) or {}
+            prog = int(doc.get("progress") or 0)
+            if prog <= 0:
+                continue
+            mal = doc.get("mal_id")
+            media = self.get_media(mal_id=mal) if mal else self.get_media(anilist_id=anilist_id)
+            _add(media, prog)
         for mal_id in watched.recent_mal_ids():
             if mal_id in seen:
                 continue
             eps = watched.watched_episodes(mal_id)
-            if not eps:
+            if eps:
+                _add(self.get_media(mal_id=mal_id), max(eps))
+        for mal_id in resume.recent_mal_ids():
+            if mal_id in seen:
                 continue
-            media = self.get_media(mal_id=mal_id)
-            if not media or not media.get("idMal"):
-                continue
-            total = media.get("episodes") or 0
-            prog = max(eps)
-            if total and prog >= total:
-                continue
-            media["_progress"] = prog
-            items.append(media)
-            seen.add(mal_id)
+            point = resume.get(mal_id)
+            if point:
+                # in-progress episode N -> completed up to N-1 (the seek resumes in N)
+                _add(self.get_media(mal_id=mal_id), max(0, int(point.get("ep") or 1) - 1))
         return items
 
     def watchlist(self, page=1, per_page=50):
-        entries = self._list_entries("PLANNING", ["UPDATED_TIME_DESC"])
+        # My List must reflect a favourite added moments earlier -> always fetch the
+        # PLANNING list live (the 1-hour API cache otherwise re-serves the pre-add
+        # collection on navigation). Kodi disc-cache is already off for this route.
+        entries = self._list_entries("PLANNING", ["UPDATED_TIME_DESC"], use_cache=False)
         if not entries:
             return [], False
         start = (page - 1) * per_page

@@ -116,6 +116,19 @@ class TestReverse:
         _reset_map(tvdb_members={})
         assert identity.reverse_ids(99999) is None
 
+    def test_monolith_reverse_from_by_mal_fallback(self):
+        # One Piece: recorded in by_mal with tmdb 37854 but NOT in tvdb_members, so
+        # members_for_tmdb misses -> the forward-index fallback must recover mal 21.
+        _reset_map(by_mal={"21": [81797, 1, 37854, 1, "one-piece"]}, tvdb_members={})
+        assert season_map.members_for_tmdb(37854) == []  # tvdb-members reverse misses
+        assert identity.reverse_ids(37854) == {"anilist": None, "mal": 21}
+
+    def test_monolith_resolve_mal_id_from_tmdb_param(self):
+        # The skin's One Piece Play sends tmdb_id (no mal_id) -> must resolve to 21.
+        _reset_map(by_mal={"21": [81797, 1, 37854, 1, "one-piece"]}, tvdb_members={})
+        params = {"info": "trakt_upnext", "tmdb_id": "37854", "tmdb_type": "tv"}
+        assert identity.resolve_mal_id(params, client=None) == 21
+
     def test_garbage_returns_none(self):
         assert identity.reverse_ids(None) is None
         assert identity.reverse_ids("x") is None

@@ -325,6 +325,25 @@ class TestCollectTvFranchise:
         assert result[0]["episodes"] == 12
         assert result[1]["episodes"] == 12
 
+    def test_batched_fetch_avoids_per_cour_get_media(self):
+        """When the client can batch (get_media_many), cours are assembled from the
+        single batched result and per-cour get_media is NOT called."""
+        compact = load_fixture("franchise_map.json")
+        _inject_season_map(compact)
+
+        m1 = _make_media(16498, 16498, year=2019)
+        m2 = _make_media(20958, 20958, year=2021)
+
+        client = MagicMock()
+        client.get_franchise_cache.return_value = None
+        client.get_media_many.return_value = {16498: m1, 20958: m2}
+
+        result = collect_tv_franchise(client, _make_media(16498, 16498))
+
+        assert {g["season"] for g in result} == {1, 2}
+        client.get_media_many.assert_called_once()
+        client.get_media.assert_not_called()  # batch covered every cour
+
     def test_result_is_memoized_on_success(self):
         compact = load_fixture("franchise_map.json")
         _inject_season_map(compact)

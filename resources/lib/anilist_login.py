@@ -72,6 +72,13 @@ def prompt_login():
         )
         return False
     auth.set_anilist_token(token, viewer.get("name", ""))
+    # Populate the local O(1) progress store immediately so resume works without
+    # waiting for the next boot's service sync.
+    try:
+        from resources.lib.api import AniListClient
+        AniListClient().sync_progress()
+    except Exception:
+        pass
     xbmcgui.Dialog().notification(
         ADDON_NAME, "Logged in as %s" % (viewer.get("name") or "AniList"),
         xbmcgui.NOTIFICATION_INFO,

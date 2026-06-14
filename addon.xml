@@ -11,6 +11,7 @@
     <provides>video</provides>
   </extension>
   <extension point="xbmc.python.script" library="default.py"/>
+  <extension point="xbmc.service" library="service.py"/>
   <extension point="xbmc.addon.metadata">
     <summary lang="en_GB">AniList lists and Bingie info for anime</summary>
     <description lang="en_GB">Serves Bingie hub widgets, More Info panels, and metadata from AniList GraphQL. Playback hands off to Otaku, WatchNixtoons2, or Fanime F when you play an episode or movie.</description>

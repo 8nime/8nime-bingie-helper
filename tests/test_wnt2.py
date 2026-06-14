@@ -189,6 +189,17 @@ class TestEpisodeListParse:
         assert [e[1] for e in eps] == ["Episode 1", "Episode 2"]
         assert eps[0][0] == "/show-episode-1-english-subbed"
 
+    def test_second_call_is_cached_no_refetch(self):
+        html = (
+            'x name="pid" '
+            '<a href="/show-episode-1-english-subbed" data-lang="sub">Episode 1</a> '
+            "<!--CAT PAGE end"
+        )
+        with patch.object(wnt2, "_request", return_value=_resp(html)) as req:
+            wnt2.episode_list("/anime/show", "https://x", MagicMock())
+            wnt2.episode_list("/anime/show", "https://x", MagicMock())
+        assert req.call_count == 1  # second resolve reused the parsed list
+
 
 class TestResolveMovieUrl:
     MOVIES = [

@@ -532,6 +532,15 @@ class TestOnPlanning:
         client._list_entries.assert_not_called()
 
 
+class TestWatchlistLive:
+    def test_watchlist_fetches_planning_live(self, client):
+        # My List must be live: the PLANNING fetch bypasses the API cache so a
+        # just-added favourite shows on navigation.
+        client._list_entries = MagicMock(return_value=[])
+        client.watchlist()
+        assert client._list_entries.call_args.kwargs.get("use_cache") is False
+
+
 class TestListState:
     def test_planning_and_no_rating(self, client):
         client._entry = MagicMock(return_value={"id": 1, "status": "PLANNING", "score": 0})
@@ -643,3 +652,36 @@ class TestSaveMediaScoreRating:
         ok, action = c.save_media_score(40748, "dislike")
         assert (ok, action) == (True, "dislike")
         assert c._post.call_args[0][1] == {"mediaId": 99, "score": 25.0, "status": "CURRENT"}
+
+
+class TestSyncProgress:
+    """Boot/login sync: one lean MediaListCollection pull -> the local progress store."""
+
+    def test_populates_store_from_collection(self, client, monkeypatch):
+        from resources.lib import progress
+        monkeypatch.setattr(api_module, "has_anilist_token", lambda: True)
+
+        def fake_post(query, variables=None, use_cache=True):
+            if "Viewer" in query:
+                return {"Viewer": {"id": 7}}
+            return {"MediaListCollection": {"lists": [
+                {"entries": [
+                    {"progress": 12, "updatedAt": 100,
+                     "media": {"id": 21, "idMal": 21, "episodes": 1000}},
+                    {"progress": 3, "updatedAt": 200,
+                     "media": {"id": 5, "idMal": 40748, "episodes": 26}},
+                ]},
+            ]}}
+
+        monkeypatch.setattr(client, "_post", fake_post)
+        n = client.sync_progress()
+        assert n == 2
+        assert progress.progress_of(21) == 12
+        assert progress.total_of(21) == 1000
+        assert progress.get(5)["mal_id"] == 40748
+
+    def test_no_token_is_noop(self, client, monkeypatch):
+        from resources.lib import progress
+        monkeypatch.setattr(api_module, "has_anilist_token", lambda: False)
+        assert client.sync_progress() == 0
+        assert progress.get(21) is None

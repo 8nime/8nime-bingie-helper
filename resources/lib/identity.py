@@ -94,6 +94,13 @@ def reverse_ids(tmdb_id, season=None):
                 "mal": src if kind == "mal" else None}
     members = season_map.members_for_tmdb(val)
     if not members:
+        # Monolith fallback: the TV entry (One Piece) lives in the forward by_mal
+        # index, NOT tvdb_members, so members_for_tmdb misses it. Reverse the forward
+        # index instead -- otherwise the skin's tmdb_id Play params resolve to nothing
+        # and the Play button hangs with an empty result.
+        flat = season_map.ids_for_tmdb(val)
+        if flat and (flat.get("mal") is not None or flat.get("anilist") is not None):
+            return {"anilist": flat.get("anilist"), "mal": flat.get("mal")}
         return None
     chosen = _pick_member(members, season)
     return {"anilist": chosen.get("anilist"), "mal": chosen.get("mal")}
