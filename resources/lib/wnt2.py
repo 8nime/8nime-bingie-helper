@@ -18,8 +18,11 @@ takes ``base_url`` as an argument and imports nothing from Kodi, so it can be
 exercised head-less in a dry-run. Only ``default_base_url`` touches xbmc.
 """
 import difflib
+import json
+import os
 import re
 import ssl
+import time
 from urllib.parse import urlencode, urlparse
 
 import requests
@@ -342,6 +345,79 @@ def resolve_movie_url(titles, base_url, lang="sub", min_score=0.6):
     return chosen[1], debug
 
 
+# --- WNT2-only durable resolve helpers (scoped to wcostream; never touched by the
+# --- Otaku / Fanime playback paths, which don't import resolve_episode_url) -------
+# wcostream search throttles rapid queries (the productive bare-name query then
+# intermittently returns 0). Two mitigations, both confined to this module:
+#   * a tiny persistent cache of resolved series-page URLs, so repeat episode plays
+#     of the same show skip search entirely;
+#   * one retry pass with a short backoff when a whole search attempt comes up empty.
+_SEARCH_RETRY_DELAY = 3.0
+_SERIES_CACHE = None  # lazy {normalized_title: series_page_url}
+
+
+def _series_cache_path():
+    try:
+        import xbmcvfs
+
+        from resources.lib.constants import ADDON_ID
+
+        base = xbmcvfs.translatePath("special://profile/addon_data/%s/" % ADDON_ID)
+    except Exception:
+        base = os.path.join(os.path.expanduser("~"), ".8nime")
+    return os.path.join(base, "wnt2_series.json")
+
+
+def _series_cache():
+    global _SERIES_CACHE
+    if _SERIES_CACHE is None:
+        _SERIES_CACHE = {}
+        try:
+            path = _series_cache_path()
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as handle:
+                    _SERIES_CACHE = json.load(handle) or {}
+        except Exception:
+            _SERIES_CACHE = {}
+    return _SERIES_CACHE
+
+
+def _series_cache_get(titles):
+    cache = _series_cache()
+    for title in titles:
+        key = _norm(title)
+        if key and cache.get(key):
+            return cache[key]
+    return None
+
+
+def _series_cache_put(titles, series_url):
+    if not series_url:
+        return
+    cache = _series_cache()
+    changed = False
+    for title in titles:
+        key = _norm(title)
+        if key and cache.get(key) != series_url:
+            cache[key] = series_url
+            changed = True
+    if not changed:
+        return
+    try:
+        path = _series_cache_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(cache, handle)
+    except Exception:
+        pass
+
+
+def reset_series_cache():
+    """Test hook: drop the in-process series-page cache."""
+    global _SERIES_CACHE
+    _SERIES_CACHE = None
+
+
 def resolve_episode_url(titles, number, base_url, lang="sub", min_score=0.55,
                         season=1, offset=0):
     """Find the wcostream episode-page URL for episode ``number`` of a series.
@@ -354,25 +430,48 @@ def resolve_episode_url(titles, number, base_url, lang="sub", min_score=0.55,
     dict describing what matched, for logging / dry-run output.
     """
     session = requests.session()
+    titles = [t for t in titles if t]
     debug = {"tried": [], "series": None, "score": 0.0, "episodes": 0,
              "season": season, "offset": offset}
-    for title in [t for t in titles if t]:
-        results = search_series(title, base_url, session)
-        debug["tried"].append({"query": title, "results": len(results)})
-        if not results:
-            continue
-        link, name, score = best_series(results, *titles)
-        if not link or score < min_score:
-            debug["score"] = max(debug["score"], score)
-            continue
-        debug.update({"series": name, "series_url": link, "score": score})
-        eps = episode_list(link, base_url, session)
-        debug["episodes"] = len(eps)
+
+    # Cached series page first: repeat plays of the same show skip search entirely
+    # (so wcostream's search throttle is only ever hit on the first resolve). A stale
+    # entry yields an empty episode list / no match and harmlessly falls through to a
+    # fresh search below, which overwrites it.
+    cached_url = _series_cache_get(titles)
+    if cached_url:
+        eps = episode_list(cached_url, base_url, session)
         hit = match_episode(eps, number, season=season, offset=offset,
                             lang=lang, titles=titles)
         if hit:
-            debug["episode"] = {"name": hit[1], "type": hit[2], "url": hit[0]}
+            debug.update({"series_url": cached_url, "cached": True, "episodes": len(eps),
+                          "episode": {"name": hit[1], "type": hit[2], "url": hit[0]}})
             return hit[0], debug
+
+    # Search, with one retry pass: wcostream's search intermittently returns 0 for the
+    # productive bare-name query when throttled, so a single backoff+retry turns that
+    # transient miss into a hit instead of a hard "no match".
+    for attempt in range(2):
+        for title in titles:
+            results = search_series(title, base_url, session)
+            debug["tried"].append({"query": title, "results": len(results), "attempt": attempt})
+            if not results:
+                continue
+            link, name, score = best_series(results, *titles)
+            if not link or score < min_score:
+                debug["score"] = max(debug["score"], score)
+                continue
+            debug.update({"series": name, "series_url": link, "score": score})
+            eps = episode_list(link, base_url, session)
+            debug["episodes"] = len(eps)
+            hit = match_episode(eps, number, season=season, offset=offset,
+                                lang=lang, titles=titles)
+            if hit:
+                debug["episode"] = {"name": hit[1], "type": hit[2], "url": hit[0]}
+                _series_cache_put(titles, link)
+                return hit[0], debug
+        if attempt == 0:
+            time.sleep(_SEARCH_RETRY_DELAY)
     return None, debug
 
 

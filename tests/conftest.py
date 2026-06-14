@@ -39,6 +39,10 @@ def _reset_addon_settings(tmp_path):
     from resources.lib import watched as _watched
     _watched.reset()
     _watched._store_path = lambda: os.path.join(str(tmp_path), "watched.json")
+    from resources.lib import wnt2 as _wnt2
+    _wnt2.reset_series_cache()
+    _wnt2._series_cache_path = lambda: os.path.join(str(tmp_path), "wnt2_series.json")
     yield
     _xbmcaddon.reset()
     _watched.reset()
+    _wnt2.reset_series_cache()
