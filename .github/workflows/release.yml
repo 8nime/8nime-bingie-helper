@@ -33,21 +33,38 @@ jobs:
 
       - name: Release
         id: release
+        # A late plugin flake (e.g. the cross-repo GitHub-release upload) must NOT
+        # abort the job after the tag was already created+pushed -- otherwise the
+        # publish chain below is skipped and the install repo never hears about the
+        # new version (this is exactly how 1.8.0..1.11.2 got stuck at repo 1.7.1).
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: semantic-release
 
-      - name: Read released version
+      - name: Detect released version
         id: meta
-        if: steps.release.outcome == 'success'
+        # Decide "did a release happen?" from the TAG semantic-release created on HEAD
+        # this run -- NOT from the release step's exit code (addon.xml is always
+        # populated, so it can't be the signal). A manual workflow_dispatch force-
+        # (re)publishes the current addon.xml version (one-button backfill).
         run: |
           ADDON_ID="plugin.video.8nime.bingie.helper"
-          VERSION=$(sed -n 's/^[[:space:]]*version="\([^"]*\)".*/\1/p' addon.xml | head -1)
+          ADDON_VER=$(sed -n 's/^[[:space:]]*version="\([^"]*\)".*/\1/p' addon.xml | head -1)
+          TAG=$(git tag --points-at HEAD | sed -n 's/^v//p' | sort -V | tail -1)
           echo "addon_id=$ADDON_ID" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ -n "$TAG" ]; then
+            echo "version=$TAG" >> "$GITHUB_OUTPUT"
+            echo "released=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=$ADDON_VER" >> "$GITHUB_OUTPUT"
+            echo "released=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Package zip
-        if: steps.meta.outcome == 'success' && steps.meta.outputs.version != ''
+        if: steps.meta.outputs.released == 'true' && steps.meta.outputs.version != ''
         run: |
           ADDON_ID="${{ steps.meta.outputs.addon_id }}"
           VERSION="${{ steps.meta.outputs.version }}"
@@ -59,7 +76,7 @@ jobs:
             -x "*.pyc" -x "*__pycache__*"
 
       - name: Upload to 8nime-repo releases
-        if: steps.meta.outcome == 'success' && steps.meta.outputs.version != ''
+        if: steps.meta.outputs.released == 'true' && steps.meta.outputs.version != ''
         env:
           GH_TOKEN: ${{ secrets.REPO_TOKEN }}
         run: |
@@ -71,7 +88,7 @@ jobs:
           gh release upload "$ADDON_ID" "$ZIP" --repo 8nime/8nime-repo --clobber
 
       - name: Notify 8nime-repo to update metadata
-        if: steps.meta.outcome == 'success' && steps.meta.outputs.version != ''
+        if: steps.meta.outputs.released == 'true' && steps.meta.outputs.version != ''
         env:
           GH_TOKEN: ${{ secrets.REPO_TOKEN }}
         run: |
