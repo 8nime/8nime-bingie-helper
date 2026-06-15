@@ -53,6 +53,22 @@ class TestApplyAniList:
         progress.mark_watched(7, 7, 9)
         assert progress.progress_of(7) == 9
 
+    def test_replace_all_merges_against_disk_not_stale_cache(self):
+        # R3-2: a long-lived process's stale in-memory cache must not clobber a write
+        # another process already flushed to disk.
+        progress.mark_watched(101922, 40748, 5)  # disk now has progress 5
+        progress._CACHE = {}  # simulate a stale service cache that never saw the write
+        progress.replace_all({101922: {"mal_id": 40748, "total": 26, "progress": 3,
+                                       "watched": {}, "ts": 1.0}})
+        assert progress.progress_of(101922) == 5  # disk value preserved, not regressed
+
+    def test_replace_all_normalizes_partial_doc(self):
+        # R3-7: a partial incoming doc must not leave keys that accessors subscript.
+        progress.replace_all({777: {"progress": 4}})
+        assert progress.progress_of(777) == 4
+        assert progress.is_watched(777, 2) is True
+        assert progress.total_of(777) == 0
+
     def test_replace_all_preserves_known_mal_id_on_null_sync(self):
         # A lean sync returning idMal=null must not wipe a previously-known mal_id. R2-6.
         progress.mark_watched(101922, 40748, 3)  # local mark records mal_id 40748

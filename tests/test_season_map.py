@@ -43,6 +43,19 @@ def _reset():
     season_map._invalidate_reverse_indexes()
 
 
+def test_load_quarantines_corrupt_file(tmp_path, monkeypatch):
+    # R3-5: a genuinely corrupt map is renamed to *.corrupt (recoverable + rebuilt next
+    # refresh), not silently re-blanked every load with no trace.
+    p = tmp_path / "season_map.json"
+    p.write_text("{ not valid json", encoding="utf-8")
+    monkeypatch.setattr(season_map, "_cache_path", lambda: str(p))
+    season_map._LOADED = False
+    season_map._load()
+    assert season_map._TVDB_MEMBERS == {}
+    assert os.path.exists(str(p) + ".corrupt")
+    assert not os.path.exists(str(p))
+
+
 # ---------------------------------------------------------------------------
 # build_compact — pure data, no Kodi deps
 # ---------------------------------------------------------------------------

@@ -393,6 +393,13 @@ class TestBuildDetailItem:
         assert li._properties.get("AniList_Rating") == "8.3"
         assert li._properties.get("Status") == "FINISHED"
 
+    def test_header_carries_imdb_trakt_ratings_for_spotlight_circle(self, tv_media):
+        # R3-1: the home/hub spotlight cast-thumb circle reads these off the details
+        # item (Container 17195), so apply_header must set them -- not only apply_spotlight.
+        li = build_detail_item(tv_media)
+        assert li._properties.get("IMDb_Rating") == "8.3"
+        assert li._properties.get("Trakt_Rating") == "8.3"
+
     def test_header_carries_director_and_creator(self, tv_media):
         li = build_detail_item(tv_media)
         assert "Sotozaki" in li._properties.get("Director", "")
@@ -495,6 +502,12 @@ class TestBuildEpisodeItem:
         li = build_episode_item(40748, 1, "Demon Slayer")
         assert li._properties["DBType"] == "episode"
 
+    def test_sets_unique_ids(self):
+        # R3-4: skin select_artwork/refresh_details read ListItem.UniqueID(...).
+        li = build_episode_item(40748, 1, "Demon Slayer")
+        assert li._unique_ids.get("mal") == "40748"
+        assert li._unique_ids.get("tmdb")  # non-empty (real Fribb id or surrogate)
+
     def test_path_is_deferred_play_route(self):
         # Episode items route through the helper's own info=play route; the
         # actual backend URL (Otaku/WNT2/Fanime) is resolved later at click
@@ -571,6 +584,11 @@ class TestBuildSeasonItem:
     def test_property_dbtype_season(self):
         li = build_season_item(40748, "Demon Slayer", 7)
         assert li._properties["DBType"] == "season"
+
+    def test_sets_unique_ids(self):
+        li = build_season_item(40748, "Demon Slayer", 7)  # R3-4
+        assert li._unique_ids.get("mal") == "40748"
+        assert li._unique_ids.get("tmdb")
 
     def test_path_is_episodes_url(self):
         li = build_season_item(40748, "Demon Slayer", 7)

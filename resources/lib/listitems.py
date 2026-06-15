@@ -428,8 +428,16 @@ def build_episode_item(
     li.setProperty("DBTYPE", "episode")
     li.setProperty("mediatype", "episode")
     li.setProperty("mal_id", str(mal_id))
-    li.setProperty("tmdb_id", _tmdb_id_str(media, mal_id))
+    ep_tmdb = _tmdb_id_str(media, mal_id)
+    li.setProperty("tmdb_id", ep_tmdb)
     li.setProperty("tmdb_type", "tv")
+    # Skin's select_artwork/refresh_details on episode items read ListItem.UniqueID(...);
+    # set it so the tmdb id round-trips through resolve_mal_id instead of dead-ending on
+    # an empty id and falling back to a title search (R3-4).
+    try:
+        li.setUniqueIDs({"tmdb": ep_tmdb, "mal": str(mal_id)})
+    except Exception:
+        pass
     if total_eps:
         li.setProperty("TotalEpisodes", str(total_eps))
     li.setProperty("IsPlayable", "true")
@@ -487,7 +495,13 @@ def build_season_item(mal_id, show_title, episode_count, season=1, label=None, m
     li.setProperty("DBType", "season")
     li.setProperty("DBTYPE", "season")
     li.setProperty("mal_id", str(mal_id))
-    li.setProperty("tmdb_id", _tmdb_id_str(media, mal_id))
+    season_tmdb = _tmdb_id_str(media, mal_id)
+    li.setProperty("tmdb_id", season_tmdb)
+    # See R3-4: let select_artwork/refresh_details resolve by id, not just title.
+    try:
+        li.setUniqueIDs({"tmdb": season_tmdb, "mal": str(mal_id)})
+    except Exception:
+        pass
     li.setProperty("folderpath", episodes_url)
     li.setProperty("filenameandpath", episodes_url)
     li.setProperty("TotalEpisodes", str(episode_count or 0))

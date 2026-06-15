@@ -814,6 +814,7 @@ class AniListClient:
             # resume point, the user finished it elsewhere -> clear the stale point so Play
             # offers the next episode. The ts guard preserves a fresh local re-watch (its
             # resume point is newer than the old completion), which must still resume.
+            resume.reset()  # read fresh resume state, not the long-lived service cache
             for anilist_id in resume.recent_anilist_ids():
                 point = resume.get(anilist_id)
                 doc = progress_store.get(anilist_id)

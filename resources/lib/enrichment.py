@@ -198,6 +198,13 @@ def apply_indexed(li, media, detailed=False):
         rating = f"{score / 10.0:.1f}"
         li.setProperty("AniList_Rating", rating)
         li.setProperty("TMDb_Rating", rating)
+        # The home/hub spotlight cast-thumb + rating circle (Container 17195, fed by the
+        # details/apply_header item) gates on IMDb_Rating AND Trakt_Rating too, so mirror
+        # the AniList average into them HERE -- not only in apply_spotlight, whose item
+        # the circle never reads -- else the circle stays hidden for every 8+/9+ title
+        # (R3-1 / gap G11).
+        li.setProperty("IMDb_Rating", rating)
+        li.setProperty("Trakt_Rating", rating)
 
     if media.get("status"):
         li.setProperty("Status", media["status"])
@@ -222,15 +229,7 @@ def apply_header(li, media):
 
 
 def apply_spotlight(li, media):
-    """Rich hero item: indexed props + IMDb/Trakt ratings so the cast-thumb shows.
-
-    The spotlight cast-thumb/rating UI is gated on a rating being present; AniList
-    only gave us AniList_Rating/TMDb_Rating before (gap G11). Mirror the AniList
-    average into the IMDb/Trakt slots so the hero panel is complete.
-    """
+    """Rich hero item: the indexed props -- which now include the IMDb/Trakt rating
+    mirror the hero panel's cast-thumb/rating circle is gated on (set in apply_indexed
+    so the details-backed Container 17195 gets them too; see R3-1 / gap G11)."""
     apply_indexed(li, media, detailed=False)
-    score = media.get("averageScore")
-    if score:
-        rating = f"{score / 10.0:.1f}"
-        li.setProperty("IMDb_Rating", rating)
-        li.setProperty("Trakt_Rating", rating)

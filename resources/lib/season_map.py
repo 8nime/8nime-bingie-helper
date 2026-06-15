@@ -191,14 +191,25 @@ def _load():
     if _LOADED:
         return
     _LOADED = True
+    path = _cache_path()
     try:
-        with open(_cache_path(), "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             raw = json.load(fh)
         _BY_ANILIST = raw.get("by_anilist") or {}
         _BY_MAL = raw.get("by_mal") or {}
         _TVDB_MEMBERS = raw.get("tvdb_members") or {}
         _META = raw.get("_meta") or {}
-    except Exception:
+    except FileNotFoundError:
+        _BY_ANILIST, _BY_MAL, _TVDB_MEMBERS, _META = {}, {}, {}, {}
+    except Exception as exc:
+        # All writers are atomic now (tmp + os.replace), so a parse failure means the
+        # file is genuinely corrupt, not a torn read. Keep it aside for diagnosis (and
+        # so the next refresh rebuilds) instead of silently blanking it forever (R3-5).
+        try:
+            os.replace(path, path + ".corrupt")
+        except OSError:
+            pass
+        _log("corrupt season_map (%s) -> kept as .corrupt; will rebuild on next refresh" % exc)
         _BY_ANILIST, _BY_MAL, _TVDB_MEMBERS, _META = {}, {}, {}, {}
     _invalidate_reverse_indexes()
 
@@ -241,14 +252,18 @@ def _read_meta():
 
 
 def _stamp_checked_at(now):
-    """Update only the checked_at timestamp in the existing cache file."""
+    """Update only the checked_at timestamp in the existing cache file (atomically --
+    a plain truncate-in-place rewrite of the ~420 KB map could be read torn by a
+    concurrent plugin process; tmp + os.replace avoids that, R3-5)."""
     try:
         path = _cache_path()
         with open(path, "r", encoding="utf-8") as fh:
             cur = json.load(fh)
         cur.setdefault("_meta", {})["checked_at"] = now
-        with open(path, "w", encoding="utf-8") as fh:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(cur, fh, separators=(",", ":"))
+        os.replace(tmp, path)
     except Exception:
         pass
 

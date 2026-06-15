@@ -146,7 +146,8 @@ def mark_watched(anilist_id, mal_id, episode, total=0):
         return False
     if episode < 1:
         return False
-    data = _load()
+    reset()  # re-read current disk before the read-modify-write so a concurrent
+    data = _load()  # process's write (boot-service sync) isn't clobbered (R3-2)
     doc = data.setdefault(str(anilist_id), {"mal_id": None, "total": 0, "progress": 0, "watched": {}, "ts": 0.0})
     if mal_id:
         doc["mal_id"] = int(mal_id)
@@ -182,7 +183,8 @@ def replace_all(docs):
 
     Used by the boot sync to write the whole list in one save. Preserves any existing
     local `watched` marks + a higher local progress for an id already present."""
-    data = _load()
+    reset()  # merge against CURRENT disk, not the long-lived service _CACHE snapshot,
+    data = _load()  # so a babysit completion mid-sync isn't clobbered (R3-2)
     for key, incoming in (docs or {}).items():
         skey = str(key)
         existing = data.get(skey)
@@ -198,7 +200,15 @@ def replace_all(docs):
             incoming["total"] = max(int(existing.get("total") or 0), int(incoming.get("total") or 0))
             incoming["watched"] = dict(existing.get("watched") or {})
             incoming["ts"] = max(float(existing.get("ts") or 0), float(incoming.get("ts") or 0))
-        data[skey] = incoming
+        # Normalize to the full doc shape (like _load) so a partial incoming dict can't
+        # leave a doc missing keys that progress_of/is_watched/watched_set subscript (R3-7).
+        data[skey] = {
+            "mal_id": incoming.get("mal_id"),
+            "total": int(incoming.get("total") or 0),
+            "progress": int(incoming.get("progress") or 0),
+            "watched": {str(e): True for e in (incoming.get("watched") or {})},
+            "ts": float(incoming.get("ts") or 0.0),
+        }
     _save(data)
 
 

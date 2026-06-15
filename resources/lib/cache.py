@@ -78,9 +78,15 @@ class ApiCache:
         key = self._key(query, variables)
         payload = {"ts": time.time(), "data": data}
         self._memory[key] = payload
+        path = self._path(key)
         try:
-            with xbmcvfs.File(self._path(key), "w") as handle:
+            # Atomic write (tmp + os.replace) so a concurrent reader (the detail dialog
+            # fires bursts of identical queries across processes) never sees a torn file
+            # and re-fetches needlessly (R3-6). CACHE_DIR is a real translated path.
+            tmp = "%s.tmp.%d" % (path, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as handle:
                 handle.write(json.dumps(payload))
+            os.replace(tmp, path)
         except Exception as exc:
             xbmc.log(f"[AniListBingieHelper] Cache write failed: {exc}", xbmc.LOGDEBUG)
 

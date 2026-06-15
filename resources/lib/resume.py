@@ -105,6 +105,7 @@ def set_point(anilist_id, episode, pos, dur):
         dur = float(dur or 0)
     except (TypeError, ValueError):
         return
+    reset()  # re-read disk before write so a concurrent sync/babysit isn't clobbered (R3-3)
     data = _load()
     data[str(anilist_id)] = {"ep": episode, "pos": pos, "dur": dur, "ts": time.time()}
     _save(data)
@@ -114,6 +115,7 @@ def clear(anilist_id):
     """Drop the resume point for an AniList id (episode finished / not worth resuming)."""
     if not anilist_id:
         return
+    reset()  # re-read disk before write so a concurrent sync/babysit isn't clobbered (R3-3)
     data = _load()
     if data.pop(str(anilist_id), None) is not None:
         _save(data)
